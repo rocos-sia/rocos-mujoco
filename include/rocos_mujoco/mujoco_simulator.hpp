@@ -28,9 +28,10 @@ namespace rocos_mujoco {
 // PDO variable descriptor — built from hardware_config.yaml at runtime
 // ==========================================================================
 struct PdoVarInfo {
-    std::string name;    ///< PDO variable name (from YAML)
-    int         offset;  ///< byte offset within this slave's PD area
-    int         size;    ///< size in bytes (sizeof(T))
+    std::string yaml_key; ///< YAML key name (e.g. "status_word", "control_word")
+    std::string name;     ///< PDO variable name (from YAML, e.g. "Status word")
+    int         offset;   ///< byte offset within this slave's PD area
+    int         size;     ///< size in bytes (sizeof(T))
 };
 
 /// Per-slave PDO layout, built dynamically from YAML config.
@@ -39,6 +40,39 @@ struct SlavePdoLayout {
     std::vector<PdoVarInfo> outputs;
     int input_size  = 0;   ///< total bytes for this slave's input area
     int output_size = 0;   ///< total bytes for this slave's output area
+
+    /// @brief 按 yaml_key 查找 PDO 变量偏移，未找到返回 -1
+    int findOffset(const std::string& yaml_key, bool is_input) const {
+        const auto& vec = is_input ? inputs : outputs;
+        for (const auto& v : vec) {
+            if (v.yaml_key == yaml_key) return v.offset;
+        }
+        return -1;
+    }
+};
+
+/// @brief 精简版 CiA 402 驱动状态机（仿真用）
+/// 根据 control_word 位自动切换状态，返回对应的 status_word
+class Cia402Sim {
+public:
+    Cia402Sim() = default;
+
+    /// @brief 处理一个周期的 control_word，更新内部状态
+    /// @return 当前的 status_word（uint16）
+    uint16_t process(uint16_t control_word);
+
+    /// @brief 当前是否处于 OperationEnabled 状态
+    bool isEnabled() const { return state_ == 4; }  // OperationEnabled
+
+    /// @brief 当前 CiA 402 状态值
+    uint8_t state() const { return state_; }
+
+    /// @brief 获取当前 status_word
+    uint16_t statusWord() const;
+
+private:
+    uint8_t  state_{1};         // 初始 = SwitchOnDisabled
+    bool     fault_reset_prev_{false};  // bit7 上升沿检测
 };
 
 // ==========================================================================
@@ -68,6 +102,11 @@ public:
     double getSimTime()    const { return sim_time_; }
     int    getJointCount() const { return static_cast<int>(joints_.size()); }
     double getCycleTimeUs() const { return cycle_time_us_; }
+    const std::string& getModelPath()  const { return urdf_path_; }
+    const std::string& getConfigPath() const { return hw_config_path_; }
+
+    /// @brief 获取 HardwareMJ 可视化后端指针（仅当 visualize_ 启用时非空）
+    HardwareMJ* getVisualizer() const { return visualizer_; }
 
 private:
     // ---- Initialization helpers ---------------------------------------
@@ -87,15 +126,11 @@ private:
     void signalClients();
 
     // ---- Unit conversions ---------------------------------------------
-    double  cntToUnit(double cnt, double cnt_per_unit, double ratio) const;
-    int32_t unitToCnt(double unit, double cnt_per_unit, double ratio) const;
+    double  cntToUnit(double cnt, double cnt_per_unit, double ratio,
+                       int32_t offset_pos_cnt = 0) const;
+    int32_t unitToCnt(double unit, double cnt_per_unit, double ratio,
+                      int32_t offset_pos_cnt = 0) const;
     double  torqueToUnit(int16_t raw, double torque_per_unit) const;
-
-    /// Find a PDO variable's offset within its slave's PD area by YAML key.
-    /// Returns -1 if not found.
-    int findPdoOffset(const SlavePdoLayout &layout,
-                      const std::string    &yaml_key,
-                      bool                  is_input) const;
 
     // ---- MuJoCo -------------------------------------------------------
     mjModel *m_ = nullptr;
@@ -124,6 +159,9 @@ private:
         int32_t  target_position   = 0;
         int32_t  target_velocity   = 0;
         int16_t  target_torque     = 0;
+
+        // CiA 402 state machine (仿真驱动状态迁移)
+        Cia402Sim cia;
     };
     std::vector<JointEntry> joints_;
 

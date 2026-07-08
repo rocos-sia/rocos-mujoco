@@ -25,6 +25,67 @@
 
 #include "rocos_mujoco/shared_memory_config.hpp"
 
+// ==========================================================================
+// CiA 402 仿真状态机实现
+// ==========================================================================
+namespace rocos_mujoco {
+
+uint16_t Cia402Sim::process(uint16_t cw) {
+    bool so  = (cw >> 0) & 1;  // Switch On
+    bool ev  = (cw >> 1) & 1;  // Enable Voltage
+    bool qs  = (cw >> 2) & 1;  // Quick Stop
+    bool eo  = (cw >> 3) & 1;  // Enable Operation
+    bool fr  = (cw >> 7) & 1;  // Fault Reset
+
+    if (fr && !fault_reset_prev_ && state_ == 7) {
+        state_ = 1;
+        fault_reset_prev_ = fr;
+        return statusWord();
+    }
+    fault_reset_prev_ = fr;
+
+    switch (state_) {
+    case 0: state_ = 1; break;  // NotReadyToSwitchOn → SwitchOnDisabled 自动
+    case 1: if (ev && qs) state_ = 2; break;          // Shutdown
+    case 2:
+        if (!ev)      state_ = 1;                      // Disable Voltage
+        else if (so)  state_ = 3;                      // Switch On
+        break;
+    case 3:
+        if (!ev)      state_ = 1;                      // Disable Voltage
+        else if (!so) state_ = 2;                      // Shutdown
+        else if (eo)  state_ = 4;                      // Enable Operation
+        break;
+    case 4:
+        if (!ev)      state_ = 1;                      // Disable Voltage
+        else if (!so) state_ = 2;                      // Shutdown
+        else if (!eo) state_ = 3;                      // Disable Operation
+        else if (!qs) state_ = 5;                      // Quick Stop
+        break;
+    case 5: if (!ev)  state_ = 1; break;               // Disable Voltage
+    case 7: break;                                       // Fault, wait reset
+    default: break;
+    }
+    return statusWord();
+}
+
+uint16_t Cia402Sim::statusWord() const {
+    constexpr uint16_t kRemote = 0x0200;
+    switch (state_) {
+    case 0: return kRemote | 0x0000;  // NotReadyToSwitchOn
+    case 1: return kRemote | 0x0040;  // SwitchOnDisabled (bit6)
+    case 2: return kRemote | 0x0021;  // ReadyToSwitchOn (bits 0,5)
+    case 3: return kRemote | 0x0023;  // SwitchedOn (bits 0,1,5)
+    case 4: return kRemote | 0x0027;  // OperationEnabled (bits 0,1,2,5)
+    case 5: return kRemote | 0x0007;  // QuickStopActive (bits 0,1,2)
+    case 6: return kRemote | 0x000F;  // FaultReactionActive
+    case 7: return kRemote | 0x0008;  // Fault (bit3)
+    default:return kRemote | 0x0000;
+    }
+}
+
+}  // namespace rocos_mujoco
+
 namespace rocos_mujoco {
 namespace {
 
@@ -114,9 +175,10 @@ SlavePdoLayout buildLayout(const PdoFieldTemplate *templates,
         if (pdo_name.empty()) continue;
 
         PdoVarInfo info;
-        info.name   = pdo_name;
-        info.offset = offset;
-        info.size   = t.size;
+        info.yaml_key = t.yaml_key;
+        info.name     = pdo_name;
+        info.offset   = offset;
+        info.size     = t.size;
 
         if (is_input) {
             layout.inputs.push_back(info);
@@ -306,36 +368,26 @@ void MujocoSimulator::run(double duration_sec) {
               << ", visualize=" << (visualize_ ? "yes" : "no") << ")\n";
 
     if (visualize_) {
-        // Render thread (in HardwareMJ) handles physics + rendering.
-        // Main thread bridges: read shm → write cmd → read state → write shm.
+        // 可视化路径：物理由 MujocoSimulator 同步执行（与无头模式一致），
+        // HardwareMJ 渲染线程只负责显示 —— 不再独立步进 mj_step。
+        // 这解决了之前 readState() 总读到渲染线程旧数据的问题。
+        visualizer_->setPhysicsEnabled(false);
+
         auto cycle_dur = std::chrono::microseconds(
             static_cast<long long>(cycle_time_us_));
-        std::vector<double> pos, vel, trq, cmd_pos;
+        std::vector<double> vis_pos;
 
         while (visualizer_->isRunning() && sim_time_ < end_time) {
             auto t0 = std::chrono::steady_clock::now();
 
-            // 1. Read commands from shared memory
-            readCommands();
+            // 与无头模式完全相同的 step：读命令 → 控制 → 物理 → 写传感器
+            step();
 
-            // 2. Compute position commands from target_positions
-            cmd_pos.resize(m_->nu, 0.0);
-            for (auto &j : joints_) {
-                int dof = j.mj_joint_dof;
-                if (dof < 0 || dof >= m_->nv) continue;
-                double tp = cntToUnit(j.target_position, j.cnt_per_unit, j.ratio);
-                if (dof < static_cast<int>(cmd_pos.size()))
-                    cmd_pos[dof] = tp;
-            }
-
-            // 3. Send to HardwareMJ (render thread picks it up)
-            visualizer_->writeCommand(cmd_pos, {}, {});
-
-            // 4. Read state back and write to shared memory
-            visualizer_->readState(pos, vel, trq);
-            writeSensorData();
-            signalClients();
-            sim_time_ += cycle_time_us_ / 1e6;
+            // 将当前关节位置发送给渲染线程用于显示
+            vis_pos.resize(m_->nv);
+            for (int i = 0; i < m_->nv; ++i)
+                vis_pos[i] = d_->qpos[i];
+            visualizer_->writeCommand(vis_pos, {}, {});
 
             auto elapsed = std::chrono::duration_cast<
                 std::chrono::microseconds>(
@@ -374,6 +426,10 @@ bool MujocoSimulator::loadModel(const std::string &urdf_path) {
     if (d_ == nullptr) {
         mj_deleteModel(m_); m_ = nullptr;
         return false;
+    }
+    // 从模型的 qpos0 初始化（不依赖 keyframe，确保非零初始位姿）
+    if (m_->qpos0 != nullptr) {
+        std::memcpy(d_->qpos, m_->qpos0, m_->nq * sizeof(mjtNum));
     }
     mj_forward(m_, d_);
     std::cout << "\033[1;32m[INFO]\033[0m Model: "
@@ -509,33 +565,34 @@ bool MujocoSimulator::setupSharedMemory() {
     int slave_idx = 0;
 
     auto populate_slave = [&](int id, const std::string &name,
-                              const SlavePdoLayout &pdo) {
+                              const SlavePdoLayout &pdo,
+                              int input_base, int output_base) {
         rocos::Slave &sl = shm_->ecatBus->slaves[slave_idx];
         sl.id = id;
         std::strncpy(sl.name, name.c_str(), MAX_SLAVE_NAME_LEN - 1);
         sl.name[MAX_SLAVE_NAME_LEN - 1] = '\0';
 
-        // Input variables
+        // Input variables — offset 必须是全局偏移（pdInputPtr + offset）
         sl.input_var_num = static_cast<int>(pdo.inputs.size());
         for (size_t v = 0; v < pdo.inputs.size() && v < MAX_PDINPUT_NUM; ++v) {
             rocos::PdVar &pv = sl.input_vars[v];
             std::strncpy(pv.name, pdo.inputs[v].name.c_str(),
                          MAX_PD_NAME_LEN - 1);
             pv.name[MAX_PD_NAME_LEN - 1] = '\0';
-            pv.offset    = pdo.inputs[v].offset;
+            pv.offset    = input_base + pdo.inputs[v].offset;
             pv.size      = pdo.inputs[v].size;
             pv.index     = static_cast<uint16_t>(0x6000 + v);
             pv.sub_index = 1;
         }
 
-        // Output variables
+        // Output variables — 同理，全局偏移
         sl.output_var_num = static_cast<int>(pdo.outputs.size());
         for (size_t v = 0; v < pdo.outputs.size() && v < MAX_PDOUTPUT_NUM; ++v) {
             rocos::PdVar &pv = sl.output_vars[v];
             std::strncpy(pv.name, pdo.outputs[v].name.c_str(),
                          MAX_PD_NAME_LEN - 1);
             pv.name[MAX_PD_NAME_LEN - 1] = '\0';
-            pv.offset    = pdo.outputs[v].offset;
+            pv.offset    = output_base + pdo.outputs[v].offset;
             pv.size      = pdo.outputs[v].size;
             pv.index     = static_cast<uint16_t>(0x7000 + v);
             pv.sub_index = 1;
@@ -544,13 +601,16 @@ bool MujocoSimulator::setupSharedMemory() {
     };
 
     for (const auto &j : joints_)
-        populate_slave(j.slave_id, j.joint_name, j.pdo);
+        populate_slave(j.slave_id, j.joint_name, j.pdo,
+                       j.pd_input_base, j.pd_output_base);
     for (const auto &ft : ft_sensors_)
         populate_slave(ft.slave_id,
-                       "ft_sensor_" + std::to_string(ft.slave_id), ft.pdo);
+                       "ft_sensor_" + std::to_string(ft.slave_id), ft.pdo,
+                       ft.pd_input_base, 0);
     for (const auto &io : io_modules_)
         populate_slave(io.slave_id,
-                       "io_module_" + std::to_string(io.slave_id), io.pdo);
+                       "io_module_" + std::to_string(io.slave_id), io.pdo,
+                       io.pd_input_base, io.pd_output_base);
 
     shm_->ecatBus->slave_num = slave_idx;
     return true;
@@ -567,13 +627,14 @@ void MujocoSimulator::readCommands() {
     for (auto &j : joints_) {
         char *base = out + j.pd_output_base;
 
-        // Use PDO layout to find offsets dynamically
         auto off = [&](const char *key) {
-            return findPdoOffset(j.pdo, key, false);
+            return j.pdo.findOffset(key, false);
         };
         int o;
-        if ((o = off("control_word"))      >= 0)
-            j.control_word      = *reinterpret_cast<uint16_t *>(base + o);
+        if ((o = off("control_word"))      >= 0) {
+            j.control_word = *reinterpret_cast<uint16_t *>(base + o);
+            j.cia.process(j.control_word);
+        }
         if ((o = off("mode_of_operation")) >= 0)
             j.mode_of_operation = *reinterpret_cast<int8_t   *>(base + o);
         if ((o = off("target_position"))   >= 0)
@@ -590,27 +651,30 @@ void MujocoSimulator::readCommands() {
 // ==========================================================================
 
 void MujocoSimulator::applyControl() {
+    // 使用 MuJoCo 内置 actuator 控制（遵循 RoboChargeX 模式）。
+    // 将目标位置写入 d_->ctrl，由 XML 中 <position kp="500" kv="20"> 执行 PD。
+    // 与 RoboChargeX HardwareMJ::SetJointPosition 中 d_->ctrl[i] = pos 一致。
+    //
+    // 注意：不同 mode_of_operation 的切换在此层面不做额外处理 ——
+    // CSP/CSV/CST 的区别由上层 rocos::Hardware 在写入 target_position 前完成。
     for (auto &j : joints_) {
         int dof = j.mj_joint_dof;
-        if (dof < 0 || dof >= m_->nv) continue;
+        if (dof < 0 || dof >= m_->nu) continue;  // m_->nu = actuator count
 
-        double q    = d_->qpos[dof];
-        double qdot = d_->qvel[dof];
-        double tp   = cntToUnit(j.target_position, j.cnt_per_unit, j.ratio);
-        double tv   = cntToUnit(j.target_velocity, j.cnt_per_unit, j.ratio);
-        double tt   = torqueToUnit(j.target_torque, j.torque_per_unit);
-
-        double tau = 0.0;
-        switch (j.mode_of_operation) {
-        case 8:  tau = KP_ * (tp - q) - KD_ * qdot; break;  // CSP
-        case 9:  tau = KV_ * (tv - qdot);            break;  // CSV
-        case 10: tau = tt;                            break;  // CST
-        case 6:  tau = KP_ * (tp - q) - KD_ * qdot; break;  // Homing
-        default: tau = -KD_ * qdot;                   break;  // damping
+        if (j.cia.isEnabled()) {
+            double tp = cntToUnit(j.target_position, j.cnt_per_unit, j.ratio, j.offset_pos_cnt);
+            // 限位：尊重 XML actuator 的 ctrlrange
+            if (dof < m_->nu) {
+                mjtNum lo = m_->actuator_ctrlrange[2 * dof];
+                mjtNum hi = m_->actuator_ctrlrange[2 * dof + 1];
+                tp = std::max(lo, std::min(hi, tp));
+            }
+            d_->ctrl[dof] = tp;
+        } else {
+            // 未使能：保持当前位置（不施加主动力）
+            if (dof < m_->nu)
+                d_->ctrl[dof] = d_->qpos[dof];
         }
-        constexpr double MAX_T = 500.0;
-        tau = std::max(-MAX_T, std::min(MAX_T, tau));
-        d_->qfrc_applied[dof] = tau;
     }
 }
 
@@ -643,20 +707,20 @@ void MujocoSimulator::writeSensorData() {
         double qdot = (dof >= 0) ? d_->qvel[dof] : 0.0;
         double tau  = (dof >= 0) ? d_->qfrc_applied[dof] : 0.0;
 
-        int32_t pc = unitToCnt(q,    j.cnt_per_unit, j.ratio);
-        int32_t vc = unitToCnt(qdot, j.cnt_per_unit, j.ratio);
+        int32_t pc = unitToCnt(q,    j.cnt_per_unit, j.ratio, j.offset_pos_cnt);
+        int32_t vc = unitToCnt(qdot, j.cnt_per_unit, j.ratio, 0);
         int16_t tc = static_cast<int16_t>(tau * j.torque_per_unit);
 
         auto off = [&](const char *key) {
-            return findPdoOffset(j.pdo, key, true);
+            return j.pdo.findOffset(key, true);
         };
         int o;
         #define W(name, val, type) \
             if ((o = off(#name)) >= 0) \
                 *reinterpret_cast<type*>(base+o)=static_cast<type>(val)
 
-        W(status_word,              0x0637, uint16_t);
-        W(position_actual_value,    pc,     int32_t);
+        W(status_word,              j.cia.statusWord(), uint16_t);
+        W(position_actual_value,    pc,                int32_t);
         W(velocity_actual_value,    vc,     int32_t);
         W(torque_actual_value,      tc,     int16_t);
         W(load_torque_value,        tc,     int16_t);
@@ -703,13 +767,13 @@ void MujocoSimulator::signalClients() {
 // ==========================================================================
 
 double MujocoSimulator::cntToUnit(double cnt, double cnt_per_unit,
-                                   double ratio) const {
-    return cnt / cnt_per_unit / ratio;
+                                   double ratio, int32_t offset_pos_cnt) const {
+    return (static_cast<double>(cnt) - offset_pos_cnt) / cnt_per_unit / ratio;
 }
 
 int32_t MujocoSimulator::unitToCnt(double unit, double cnt_per_unit,
-                                    double ratio) const {
-    return static_cast<int32_t>(unit * cnt_per_unit * ratio);
+                                    double ratio, int32_t offset_pos_cnt) const {
+    return static_cast<int32_t>(unit * cnt_per_unit * ratio) + offset_pos_cnt;
 }
 
 double MujocoSimulator::torqueToUnit(int16_t raw,
@@ -717,55 +781,6 @@ double MujocoSimulator::torqueToUnit(int16_t raw,
     return static_cast<double>(raw) / torque_per_unit;
 }
 
-int MujocoSimulator::findPdoOffset(const SlavePdoLayout &layout,
-                                    const std::string    &yaml_key,
-                                    bool                  is_input) const {
-    const auto &vec = is_input ? layout.inputs : layout.outputs;
 
-    // Find the PDO variable whose name matches what's in the YAML config.
-    // We match by position: the k-th variable in the layout corresponds
-    // to the k-th field template.  But since we need to find by YAML key
-    // (like "position_actual_value"), we do a linear search.
-    //
-    // The templates and the layout are in the same order, so we can just
-    // iterate in order.  For robustness, we match by index.
-
-    // Actually, the simplest approach: the layout was built from the same
-    // templates in the same order.  So the i-th template corresponds to
-    // the i-th entry in the layout.  Find the template index, then use
-    // the corresponding layout entry.
-    const PdoFieldTemplate *templates = nullptr;
-    int tcount = 0;
-
-    if (is_input) {
-        // Determine type from layout size (heuristic)
-        // Driver inputs: 9 fields, FT inputs: 6 fields, IO inputs: 3 fields
-        if (layout.inputs.size() == 9) {
-            templates = DRIVE_INPUT_FIELDS; tcount = DRIVE_INPUT_COUNT;
-        } else if (layout.inputs.size() == 6) {
-            templates = FT_INPUT_FIELDS;    tcount = FT_INPUT_COUNT;
-        } else if (layout.inputs.size() == 3) {
-            templates = IO_INPUT_FIELDS;    tcount = IO_INPUT_COUNT;
-        }
-    } else {
-        if (layout.outputs.size() == 6) {
-            templates = DRIVE_OUTPUT_FIELDS; tcount = DRIVE_OUTPUT_COUNT;
-        } else if (layout.outputs.size() == 2) {
-            templates = IO_OUTPUT_FIELDS;    tcount = IO_OUTPUT_COUNT;
-        }
-    }
-
-    if (templates == nullptr) return -1;
-
-    for (int i = 0; i < tcount; ++i) {
-        if (yaml_key == templates[i].yaml_key) {
-            const auto &vec2 = is_input ? layout.inputs : layout.outputs;
-            if (i < static_cast<int>(vec2.size()))
-                return vec2[static_cast<size_t>(i)].offset;
-            return -1;
-        }
-    }
-    return -1;
-}
 
 }  // namespace rocos_mujoco
