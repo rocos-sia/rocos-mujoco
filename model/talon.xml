@@ -88,7 +88,7 @@
         </body>
     </worldbody>
 
-    <actuator>
+    <!-- <actuator>
         <general name="actuator_1" joint="joint_1" class="joint_1" />
         <general name="actuator_2" joint="joint_2" class="joint_1" />
         <general name="actuator_3" joint="joint_3" class="joint_1" />
@@ -96,6 +96,17 @@
         <general name="actuator_5" joint="joint_5" class="joint_1" />
         <general name="actuator_6" joint="joint_6" class="joint_1" />
         <general name="actuator_7" joint="joint_7" class="joint_1" />
-    </actuator>
+    </actuator> -->
+
+    <actuator>
+    <!-- joint_1 到 joint_7: 转动关节，位置控制带 PD -->
+    <position joint="joint_1" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_2" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_3" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_4" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_5" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_6" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_7" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
+  </actuator>
 
 </mujoco>

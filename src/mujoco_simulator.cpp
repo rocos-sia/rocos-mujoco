@@ -674,11 +674,20 @@ void MujocoSimulator::applyControl() {
                 tp = std::max(lo, std::min(hi, tp));
             }
             d_->ctrl[dof] = tp;
+            // 使能期间持续更新锁死位置 —— 下使能后会锁在此位置
+            j.hold_position = d_->qpos[dof];
+            j.hold_valid    = true;
+            // 清除 qfrc_applied（使能时走 actuator，不额外加力）
+            if (dof < m_->nv)
+                d_->qfrc_applied[dof] = 0.0;
+        } else if (j.hold_valid) {
+            d_->ctrl[dof] = j.hold_position;
         } else {
-            // 未使能：保持当前位置（不施加主动力）
-            if (dof < m_->nu)
-                d_->ctrl[dof] = d_->qpos[dof];
+            // 从未使能过：以当前位置为目标，actuator 不发力
+            d_->ctrl[dof] = d_->qpos[dof];
         }
+        if (dof < m_->nv)
+            d_->qfrc_applied[dof] = 0.0;
     }
 }
 

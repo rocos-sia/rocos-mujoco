@@ -162,6 +162,10 @@ private:
 
         // CiA 402 state machine (仿真驱动状态迁移)
         Cia402Sim cia;
+
+        // 下使能时锁死的目标位置（记录下使能瞬间的 qpos）
+        double hold_position{0.0};
+        bool   hold_valid{false};
     };
     std::vector<JointEntry> joints_;
 
