@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) {
                 urdf_path   = "model/charge_arm.xml";
                 config_path = "config/charge_arm_config.yaml";
             } else if (model == "talon") {
-                urdf_path   = "model/talon/talon.xml";
+                urdf_path   = "model/scene.xml";
                 config_path = "config/hardware_talon_config.yaml";
             } else {
                 std::cerr << "未知模型: " << model
@@ -118,8 +118,8 @@ int main(int argc, char *argv[]) {
     }
 
     // ---- 路径解析（尝试多个目录前缀以适配不同工作目录）------------------
-    urdf_path   = resolveFile(urdf_path);
-    config_path = resolveFile(config_path);
+    // urdf_path   = resolveFile(urdf_path);
+    // config_path = resolveFile(config_path);
 
     // ---- 打印启动信息 ----------------------------------------------------
     std::cout << "╔══════════════════════════════════════════════════════════════╗\n";

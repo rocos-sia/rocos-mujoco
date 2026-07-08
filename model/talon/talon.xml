@@ -22,7 +22,7 @@
       <body name="link_2" quat="0.707107 0.707107 0 0">
         <inertial pos="0 0.117 0.024" quat="0.715275 0.698843 0 0" mass="3.99" diaginertia="0.099 0.0960465 0.00995351"/>
         <joint name="joint_2" pos="0 0 0" axis="0 0 1" damping="50"/>
-        <geom pos="0 0 0" quat="0 0 0 1" type="mesh" rgba="1 1 1 1" mesh="link_2" contype="0" conaffinity="0"/>
+        <geom pos="0 0 0" quat="0 0 0 1" type="mesh" rgba="1 1 1 1" mesh="link_1" contype="0" conaffinity="0"/>
         <body name="link_3" pos="0 0.41 0" quat="0.707107 -0.707107 0 0">
           <inertial pos="0 0.009 -0.058" quat="0.48672 0.512936 -0.512936 0.48672" mass="3.685" diaginertia="0.0400525 0.034 0.0209475"/>
           <joint name="joint_3" pos="0 0 0" axis="0 0 1" damping="50"/>
