@@ -185,13 +185,14 @@ void HardwareMJ::renderLoop() {
         } else {
             // 外部驱动模式：物理由 MujocoSimulator::step() 同步执行。
             // 渲染线程只从 cmd_pos_ 获取显示位姿，做 mj_forward 更新场景。
+            // mj_forward 必须在锁内执行 —— 与 MujocoSimulator::step() 竞争 d_。
             {
                 std::lock_guard<std::mutex> lk(mtx_);
                 for (int i = 0; i < nu_ && i < m_->nv && i < static_cast<int>(cmd_pos_.size()); ++i) {
                     d_->qpos[i] = cmd_pos_[i];
                 }
+                mj_forward(m_, d_);  // 仅前向运动学，不做动力学积分
             }
-            mj_forward(m_, d_);  // 仅前向运动学，不做动力学积分
         }
 
         mjv_updateScene(m_, d_, &opt_, nullptr, &cam_, mjCAT_ALL, &scn_);

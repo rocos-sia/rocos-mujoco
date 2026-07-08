@@ -55,6 +55,10 @@ public:
     ///        关闭时仅做 mj_forward + 渲染，物理由外部驱动。
     void setPhysicsEnabled(bool enable);
 
+    /// @brief 获取互斥锁引用 —— 外部驱动物理时（physics_enabled=false），
+    ///        MujocoSimulator 在操作 d_ 前需持有此锁，避免与渲染线程竞争。
+    std::mutex& physicsMutex() { return mtx_; }
+
     // ---- 数据交换（线程安全）--------------------------------------
     void readState(std::vector<double> &pos,
                    std::vector<double> &vel,

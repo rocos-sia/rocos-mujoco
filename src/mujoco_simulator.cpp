@@ -381,7 +381,11 @@ void MujocoSimulator::run(double duration_sec) {
             auto t0 = std::chrono::steady_clock::now();
 
             // 与无头模式完全相同的 step：读命令 → 控制 → 物理 → 写传感器
-            step();
+            // 必须在锁内执行，防止渲染线程同时访问 d_（mj_forward）。
+            {
+                std::lock_guard<std::mutex> lk(visualizer_->physicsMutex());
+                step();
+            }
 
             // 将当前关节位置发送给渲染线程用于显示
             vis_pos.resize(m_->nv);
