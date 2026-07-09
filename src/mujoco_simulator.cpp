@@ -19,10 +19,14 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 
+#ifdef ROCOS_MUJOCO_ENABLE_VISUALIZATION
+#include "rocos_mujoco/hardware_mj.hpp"
+#endif
 #include "rocos_mujoco/shared_memory_config.hpp"
 
 // ==========================================================================
@@ -276,12 +280,16 @@ MujocoSimulator::MujocoSimulator(const std::string &urdf_path,
 }
 
 MujocoSimulator::~MujocoSimulator() {
+    bool model_owned_by_visualizer = false;
+#ifdef ROCOS_MUJOCO_ENABLE_VISUALIZATION
     if (visualizer_ != nullptr) {
+        model_owned_by_visualizer = true;
         visualizer_->close();
         delete visualizer_;
         visualizer_ = nullptr;
     }
-    if (!visualize_) {
+#endif
+    if (!model_owned_by_visualizer) {
         if (d_ != nullptr) { mj_deleteData(d_); d_ = nullptr; }
         if (m_ != nullptr) { mj_deleteModel(m_); m_ = nullptr; }
     }
@@ -299,6 +307,7 @@ bool MujocoSimulator::initialize() {
 
     // 1. Load model
     if (visualize_) {
+#ifdef ROCOS_MUJOCO_ENABLE_VISUALIZATION
         visualizer_ = new HardwareMJ(urdf_path_, /*dyn=*/true);
         if (!visualizer_->init()) {
             std::cerr << "\033[1;31m[ERROR]\033[0m HardwareMJ init failed\n";
@@ -308,6 +317,12 @@ bool MujocoSimulator::initialize() {
         d_ = visualizer_->data();
         std::cout << "\033[1;32m[INFO]\033[0m Visualization window opened"
                   << " (MuJoCo Simulate UI)\n";
+#else
+        std::cerr << "\033[1;31m[ERROR]\033[0m Visualization support is not built. "
+                  << "Reconfigure with -DROCOS_MUJOCO_ENABLE_VISUALIZATION=ON "
+                  << "or run without --visualize.\n";
+        return false;
+#endif
     } else {
         if (!loadModel(urdf_path_)) {
             std::cerr << "\033[1;31m[ERROR]\033[0m Failed to load URDF: "
@@ -368,6 +383,7 @@ void MujocoSimulator::run(double duration_sec) {
               << ", visualize=" << (visualize_ ? "yes" : "no") << ")\n";
 
     if (visualize_) {
+#ifdef ROCOS_MUJOCO_ENABLE_VISUALIZATION
         // 可视化路径：物理由 MujocoSimulator 同步执行（与无头模式一致），
         // HardwareMJ 渲染线程只负责显示 —— 不再独立步进 mj_step。
         // 这解决了之前 readState() 总读到渲染线程旧数据的问题。
@@ -400,6 +416,10 @@ void MujocoSimulator::run(double duration_sec) {
                 std::this_thread::sleep_for(cycle_dur - elapsed);
         }
         visualizer_->close();
+#else
+        std::cerr << "\033[1;31m[ERROR]\033[0m Visualization support is not built.\n";
+        return;
+#endif
     } else {
         auto cycle_dur = std::chrono::microseconds(
             static_cast<long long>(cycle_time_us_));

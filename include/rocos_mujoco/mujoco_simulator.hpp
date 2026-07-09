@@ -16,13 +16,13 @@
 
 #include <mujoco/mujoco.h>
 
-#include "rocos_mujoco/hardware_mj.hpp"
-
 // Forward declarations
 namespace YAML { class Node; }
 namespace rocos { class SharedMemoryConfig; }
 
 namespace rocos_mujoco {
+
+class HardwareMJ;
 
 // ==========================================================================
 // PDO variable descriptor — built from hardware_config.yaml at runtime

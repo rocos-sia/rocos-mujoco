@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 16,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "linux-headless",
+      "displayName": "Linux headless server",
+      "description": "Build the MuJoCo engine and shared-memory simulator without GLFW/OpenGL visualization support.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/headless",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ROCOS_MUJOCO_ENABLE_VISUALIZATION": "OFF"
+      }
+    },
+    {
+      "name": "wsl-headless",
+      "displayName": "WSL headless build",
+      "description": "Build under WSL using Unix Makefiles, with GLFW/OpenGL visualization disabled for headless server runs.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/wsl-headless",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ROCOS_MUJOCO_ENABLE_VISUALIZATION": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux-headless",
+      "configurePreset": "linux-headless"
+    },
+    {
+      "name": "wsl-headless",
+      "configurePreset": "wsl-headless"
+    }
+  ]
+}
