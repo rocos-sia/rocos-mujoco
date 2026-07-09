@@ -655,39 +655,69 @@ void MujocoSimulator::readCommands() {
 // ==========================================================================
 
 void MujocoSimulator::applyControl() {
-    // 使用 MuJoCo 内置 actuator 控制（遵循 RoboChargeX 模式）。
-    // 将目标位置写入 d_->ctrl，由 XML 中 <position kp="500" kv="20"> 执行 PD。
-    // 与 RoboChargeX HardwareMJ::SetJointPosition 中 d_->ctrl[i] = pos 一致。
-    //
-    // 注意：不同 mode_of_operation 的切换在此层面不做额外处理 ——
-    // CSP/CSV/CST 的区别由上层 rocos::Hardware 在写入 target_position 前完成。
     for (auto &j : joints_) {
         int dof = j.mj_joint_dof;
-        if (dof < 0 || dof >= m_->nu) continue;  // m_->nu = actuator count
+        if (dof < 0 || dof >= m_->nu) continue;
 
-        if (j.cia.isEnabled()) {
-            double tp = cntToUnit(j.target_position, j.cnt_per_unit, j.ratio, j.offset_pos_cnt);
-            // 限位：尊重 XML actuator 的 ctrlrange
+        if (!j.cia.isEnabled()) {
+            // ---- 未使能：锁死或待在原地 ----
+            if (j.hold_valid)
+                d_->ctrl[dof] = j.hold_position;
+            else
+                d_->ctrl[dof] = d_->qpos[dof];
+            if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
+            continue;
+        }
+
+        // ---- 使能状态：根据 mode_of_operation 分发 ----
+        // CiA 402 标准模式值:
+        //   6  = Homing        → 同 CSP
+        //   8  = CSP（位置）
+        //   9  = CSV（速度）
+        //   10 = CST（力矩）
+
+        switch (j.mode_of_operation) {
+        case 8:   // CSP — 位置控制
+        case 6: { // Homing
+            double tp = cntToUnit(j.target_position, j.cnt_per_unit,
+                                  j.ratio, j.offset_pos_cnt);
             if (dof < m_->nu) {
                 mjtNum lo = m_->actuator_ctrlrange[2 * dof];
                 mjtNum hi = m_->actuator_ctrlrange[2 * dof + 1];
                 tp = std::max(lo, std::min(hi, tp));
             }
             d_->ctrl[dof] = tp;
-            // 使能期间持续更新锁死位置 —— 下使能后会锁在此位置
-            j.hold_position = d_->qpos[dof];
-            j.hold_valid    = true;
-            // 清除 qfrc_applied（使能时走 actuator，不额外加力）
-            if (dof < m_->nv)
-                d_->qfrc_applied[dof] = 0.0;
-        } else if (j.hold_valid) {
-            d_->ctrl[dof] = j.hold_position;
-        } else {
-            // 从未使能过：以当前位置为目标，actuator 不发力
-            d_->ctrl[dof] = d_->qpos[dof];
+            if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
+            break;
         }
-        if (dof < m_->nv)
-            d_->qfrc_applied[dof] = 0.0;
+        case 9: { // CSV — 速度控制
+            // 目标速度通过 qfrc_applied 实现：用阻尼差跟踪目标速度
+            double tv = cntToUnit(j.target_velocity, j.cnt_per_unit,
+                                  j.ratio, 0);
+            double verr = tv - d_->qvel[dof];
+            constexpr double KV = 100.0;  // 速度跟踪增益
+            d_->qfrc_applied[dof] = KV * verr;
+            // actuator 以当前位置为目标，不额外发力
+            d_->ctrl[dof] = d_->qpos[dof];
+            break;
+        }
+        case 10: { // CST — 力矩控制
+            double tt = torqueToUnit(j.target_torque, j.torque_per_unit);
+            d_->qfrc_applied[dof] = tt;
+            // actuator 以当前位置为目标，不额外发力
+            d_->ctrl[dof] = d_->qpos[dof];
+            break;
+        }
+        default:
+            // 未知模式：待在原地
+            d_->ctrl[dof] = d_->qpos[dof];
+            if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
+            break;
+        }
+
+        // 持续更新锁死位置
+        j.hold_position = d_->qpos[dof];
+        j.hold_valid    = true;
     }
 }
 
