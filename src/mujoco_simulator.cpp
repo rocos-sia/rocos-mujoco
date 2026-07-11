@@ -432,6 +432,8 @@ void MujocoSimulator::run(double duration_sec) {
             if (elapsed < cycle_dur)
                 std::this_thread::sleep_for(cycle_dur - elapsed);
         }
+        std::cout << "\033[1;32m[INFO]\033[0m Simulation finished (sim_time="
+                  << sim_time_ << " s)\n";
     }
 }
 
@@ -681,10 +683,11 @@ void MujocoSimulator::applyControl() {
 
         if (!j.cia.isEnabled()) {
             // ---- 未使能：锁死或待在原地 ----
-            if (j.hold_valid)
-                d_->ctrl[dof] = j.hold_position;
-            else
-                d_->ctrl[dof] = d_->qpos[dof];
+            if (!j.hold_valid) {
+                j.hold_position = d_->qpos[dof];
+                j.hold_valid    = true;
+            }
+            d_->ctrl[dof] = j.hold_position;
             if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
             continue;
         }
@@ -696,6 +699,7 @@ void MujocoSimulator::applyControl() {
         //   9  = CSV（速度）
         //   10 = CST（力矩）
 
+        bool update_hold_position = true;
         switch (j.mode_of_operation) {
         case 8:   // CSP — 位置控制
         case 6: { // Homing
@@ -730,14 +734,21 @@ void MujocoSimulator::applyControl() {
         }
         default:
             // 未知模式：待在原地
-            d_->ctrl[dof] = d_->qpos[dof];
+            if (!j.hold_valid) {
+                j.hold_position = d_->qpos[dof];
+                j.hold_valid    = true;
+            }
+            d_->ctrl[dof] = j.hold_position;
             if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
+            update_hold_position = false;
             break;
         }
 
         // 持续更新锁死位置
-        j.hold_position = d_->qpos[dof];
-        j.hold_valid    = true;
+        if (update_hold_position) {
+            j.hold_position = d_->qpos[dof];
+            j.hold_valid    = true;
+        }
     }
 }
 
