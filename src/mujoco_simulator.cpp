@@ -67,6 +67,7 @@ uint16_t Cia402Sim::process(uint16_t cw) {
         else if (!qs) state_ = 5;                      // Quick Stop
         break;
     case 5: if (!ev)  state_ = 1; break;               // Disable Voltage
+    case 6: state_ = 7; break;                           // FaultReactionActive → Fault 自动
     case 7: break;                                       // Fault, wait reset
     default: break;
     }
@@ -404,8 +405,9 @@ void MujocoSimulator::run(double duration_sec) {
             }
 
             // 将当前关节位置发送给渲染线程用于显示
-            vis_pos.resize(m_->nv);
-            for (int i = 0; i < m_->nv; ++i)
+            // qpos 以 m_->nq（广义坐标数）为界；球关节/自由关节等 nq > nv
+            vis_pos.resize(m_->nq);
+            for (int i = 0; i < m_->nq; ++i)
                 vis_pos[i] = d_->qpos[i];
             visualizer_->writeCommand(vis_pos, {}, {});
 
@@ -416,6 +418,8 @@ void MujocoSimulator::run(double duration_sec) {
                 std::this_thread::sleep_for(cycle_dur - elapsed);
         }
         visualizer_->close();
+        std::cout << "\033[1;32m[INFO]\033[0m Simulation finished (sim_time="
+                  << sim_time_ << " s)\n";
 #else
         std::cerr << "\033[1;31m[ERROR]\033[0m Visualization support is not built.\n";
         return;
@@ -679,7 +683,7 @@ void MujocoSimulator::readCommands() {
 void MujocoSimulator::applyControl() {
     for (auto &j : joints_) {
         int dof = j.mj_joint_dof;
-        if (dof < 0 || dof >= m_->nu) continue;
+        if (dof < 0 || dof >= m_->nv) continue;
 
         if (!j.cia.isEnabled()) {
             // ---- 未使能：锁死或待在原地 ----
@@ -689,7 +693,14 @@ void MujocoSimulator::applyControl() {
             }
             d_->ctrl[dof] = j.hold_position;
             if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
+            j.pos_integral = 0.0;  // 下使能时清零积分器
             continue;
+        }
+
+        // ---- 模式切换检测，清零积分器避免 windup --------------------------
+        if (j.prev_mode_of_operation != j.mode_of_operation) {
+            j.pos_integral          = 0.0;
+            j.prev_mode_of_operation = j.mode_of_operation;
         }
 
         // ---- 使能状态：根据 mode_of_operation 分发 ----
@@ -703,15 +714,27 @@ void MujocoSimulator::applyControl() {
         switch (j.mode_of_operation) {
         case 8:   // CSP — 位置控制
         case 6: { // Homing
+            // ---- CSP: MuJoCo 执行器跟踪 + 重力前馈 + 积分修正 -----------
+            //  1. ctrl = target → 执行器 kp=20000, kv=500 负责动态跟踪
+            //  2. qfrc_applied = qfrc_bias → 前馈抵消重力（执行器静态出力→0）
+            //  3. qfrc_applied += KI*∫error → 积分补偿前馈残差
             double tp = cntToUnit(j.target_position, j.cnt_per_unit,
                                   j.ratio, j.offset_pos_cnt);
-            if (dof < m_->nu) {
-                mjtNum lo = m_->actuator_ctrlrange[2 * dof];
-                mjtNum hi = m_->actuator_ctrlrange[2 * dof + 1];
-                tp = std::max(lo, std::min(hi, tp));
-            }
             d_->ctrl[dof] = tp;
-            if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
+
+            // ---- 重力前馈 + 积分修正 -------------------------------------
+            //  qfrc_bias 直接抵消重力 → 执行器不需产生静态力 → 零残差。
+            //  积分仅补偿前馈与真实重力之间的小差异（建模误差等）。
+            double actual = d_->qpos[dof];
+            double error  = tp - actual;
+            double dt     = cycle_time_us_ / 1e6;
+            j.pos_integral += error * dt;
+            constexpr double kMaxIntegralTorque = 50.0;
+            double max_integral = kMaxIntegralTorque / KI_;
+            j.pos_integral = std::max(-max_integral,
+                               std::min(max_integral, j.pos_integral));
+            d_->qfrc_applied[dof] = d_->qfrc_bias[dof]    // ← 重力前馈
+                                  + KI_ * j.pos_integral;  // ← 积分残差修正
             break;
         }
         case 9: { // CSV — 速度控制
@@ -758,6 +781,20 @@ void MujocoSimulator::applyControl() {
 
 void MujocoSimulator::stepPhysics() {
     mj_step(m_, d_);
+
+    if (verbose_) {
+        static int cnt = 0;
+        if (++cnt % 1000 == 0 && m_->nu > 0) {
+            int i = 0;  // 使用第一个执行器（而非硬编码 1）
+            std::cout
+                << "[DEBUG] step=" << cnt
+                << " ctrl=" << d_->ctrl[i]
+                << " q=" << d_->qpos[i]
+                << " act=" << d_->qfrc_actuator[i]
+                << " bias=" << d_->qfrc_bias[i]
+                << std::endl;
+        }
+    }
 }
 
 // ==========================================================================
@@ -779,7 +816,9 @@ void MujocoSimulator::writeSensorData() {
 
         double q    = (dof >= 0) ? d_->qpos[dof] : 0.0;
         double qdot = (dof >= 0) ? d_->qvel[dof] : 0.0;
-        double tau  = (dof >= 0) ? d_->qfrc_applied[dof] : 0.0;
+        // 总力矩 = 执行器力 + 外部施加力。CSP 模式使用仿真侧 PID 通过
+        // qfrc_applied 施力（ctrl 被中和），CSV/CST 同理。求和覆盖所有模式。
+        double tau  = (dof >= 0) ? (d_->qfrc_actuator[dof] + d_->qfrc_applied[dof]) : 0.0;
 
         int32_t pc = unitToCnt(q,    j.cnt_per_unit, j.ratio, j.offset_pos_cnt);
         int32_t vc = unitToCnt(qdot, j.cnt_per_unit, j.ratio, 0);

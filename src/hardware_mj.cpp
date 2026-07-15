@@ -99,22 +99,22 @@ void HardwareMJ::renderLoop() {
         running_.store(false); return;
     }
     d_  = mj_makeData(m_);
-    nu_ = m_->nv;  // DOF 数，而非 actuator 数
+    nv_ = m_->nv;  // DOF 数，而非 actuator 数
 
     // 从模型的 qpos0 初始化位置（确保不从零开始）
     if (m_->qpos0 != nullptr) {
         std::memcpy(d_->qpos, m_->qpos0, m_->nq * sizeof(mjtNum));
     }
 
-    // 初始化缓冲区
+    // 初始化缓冲区（按 DOF 数量）
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        cmd_pos_.assign(nu_, 0.0);
-        cmd_vel_.assign(nu_, 0.0);
-        cmd_trq_.assign(nu_, 0.0);
-        sim_pos_.assign(nu_, 0.0);
-        sim_vel_.assign(nu_, 0.0);
-        sim_trq_.assign(nu_, 0.0);
+        cmd_pos_.assign(nv_, 0.0);
+        cmd_vel_.assign(nv_, 0.0);
+        cmd_trq_.assign(nv_, 0.0);
+        sim_pos_.assign(nv_, 0.0);
+        sim_vel_.assign(nv_, 0.0);
+        sim_trq_.assign(nv_, 0.0);
     }
 
     // 传感器
@@ -153,7 +153,7 @@ void HardwareMJ::renderLoop() {
     // 先把初始状态同步到 sim_ 缓冲区
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        for (int i = 0; i < nu_ && i < m_->nv; ++i) {
+        for (int i = 0; i < nv_ && i < m_->nv; ++i) {
             sim_pos_[i] = d_->qpos[i];
             sim_vel_[i] = d_->qvel[i];
             sim_trq_[i] = 0.0;
@@ -164,9 +164,11 @@ void HardwareMJ::renderLoop() {
         if (physics_enabled_.load()) {
             // 独立模式：渲染线程同时负责物理和控制。
             // 使用 d_->ctrl 驱动内置 actuator（遵循 RoboChargeX 模式）。
+            // ctrl 按执行器索引，cmd_pos_ 按 DOF 索引 —— 取更小的那个。
             {
                 std::lock_guard<std::mutex> lk(mtx_);
-                for (int i = 0; i < nu_ && i < m_->nu && i < static_cast<int>(cmd_pos_.size()); ++i) {
+                int nact = std::min(m_->nu, static_cast<int>(cmd_pos_.size()));
+                for (int i = 0; i < nact; ++i) {
                     d_->ctrl[i] = cmd_pos_[i];
                 }
             }
@@ -176,7 +178,7 @@ void HardwareMJ::renderLoop() {
 
             {
                 std::lock_guard<std::mutex> lk(mtx_);
-                for (int i = 0; i < nu_ && i < m_->nv; ++i) {
+                for (int i = 0; i < nv_ && i < m_->nv; ++i) {
                     sim_pos_[i] = d_->qpos[i];
                     sim_vel_[i] = d_->qvel[i];
                     sim_trq_[i] = d_->qfrc_applied[i];
@@ -188,7 +190,8 @@ void HardwareMJ::renderLoop() {
             // mj_forward 必须在锁内执行 —— 与 MujocoSimulator::step() 竞争 d_。
             {
                 std::lock_guard<std::mutex> lk(mtx_);
-                for (int i = 0; i < nu_ && i < m_->nv && i < static_cast<int>(cmd_pos_.size()); ++i) {
+                int nq = std::min(m_->nq, static_cast<int>(cmd_pos_.size()));
+                for (int i = 0; i < nq; ++i) {
                     d_->qpos[i] = cmd_pos_[i];
                 }
                 mj_forward(m_, d_);  // 仅前向运动学，不做动力学积分
@@ -241,13 +244,13 @@ void HardwareMJ::writeCommand(const std::vector<double> &cp,
 
 int HardwareMJ::GetJointNum(int *num) {
     if (!(m_ && d_)) return -1;
-    *num = nu_;
+    *num = nv_;
     return 0;
 }
 
 int HardwareMJ::GetJointPosition(int id, double *pos) {
     if (!(m_ && d_)) return -1;
-    if (id < 0 || id >= nu_) return -1;
+    if (id < 0 || id >= nv_) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
     *pos = sim_pos_[id];
     return 0;
@@ -255,7 +258,7 @@ int HardwareMJ::GetJointPosition(int id, double *pos) {
 
 int HardwareMJ::GetJointVelocity(int id, double *vel) {
     if (!(m_ && d_)) return -1;
-    if (id < 0 || id >= nu_) return -1;
+    if (id < 0 || id >= nv_) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
     *vel = sim_vel_[id];
     return 0;
@@ -263,7 +266,7 @@ int HardwareMJ::GetJointVelocity(int id, double *vel) {
 
 int HardwareMJ::GetJointTorque(int id, double *torque) {
     if (!(m_ && d_)) return -1;
-    if (id < 0 || id >= nu_) return -1;
+    if (id < 0 || id >= nv_) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
     *torque = sim_trq_[id];
     return 0;
@@ -271,7 +274,7 @@ int HardwareMJ::GetJointTorque(int id, double *torque) {
 
 int HardwareMJ::GetJointLoadTorque(int id, double *load_torque) {
     if (!(m_ && d_)) return -1;
-    if (id < 0 || id >= nu_) return -1;
+    if (id < 0 || id >= nv_) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
     // 仿真中 qfrc_actuator 即为负载力矩（与 RoboChargeX 一致）
     *load_torque = (id < m_->nu) ? d_->qfrc_actuator[id] : 0.0;
@@ -285,28 +288,29 @@ int HardwareMJ::GetJointLoadTorque(int id, double *load_torque) {
 int HardwareMJ::GetPosition(double *pos) {
     if (!(m_ && d_)) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
-    for (int i = 0; i < nu_; ++i) pos[i] = sim_pos_[i];
+    for (int i = 0; i < nv_; ++i) pos[i] = sim_pos_[i];
     return 0;
 }
 
 int HardwareMJ::GetVelocity(double *vel) {
     if (!(m_ && d_)) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
-    for (int i = 0; i < nu_; ++i) vel[i] = sim_vel_[i];
+    for (int i = 0; i < nv_; ++i) vel[i] = sim_vel_[i];
     return 0;
 }
 
 int HardwareMJ::GetTorque(double *torque) {
     if (!(m_ && d_)) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
-    for (int i = 0; i < nu_; ++i) torque[i] = sim_trq_[i];
+    for (int i = 0; i < nv_; ++i) torque[i] = sim_trq_[i];
     return 0;
 }
 
 int HardwareMJ::GetLoadTorque(double *load_torque) {
     if (!(m_ && d_)) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
-    for (int i = 0; i < nu_ && i < m_->nu; ++i)
+    int nact = std::min(nv_, m_->nu);
+    for (int i = 0; i < nact; ++i)
         load_torque[i] = d_->qfrc_actuator[i];
     return 0;
 }
@@ -340,12 +344,12 @@ int HardwareMJ::SetJointDisabled(int /*id*/) { return 0; }
 
 int HardwareMJ::SetJointPosition(int id, double pos) {
     if (!(m_ && d_)) return -1;
-    if (id < 0 || id >= nu_) return -1;
+    if (id < 0 || id >= nv_) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
-    if (dyn_)
-        d_->ctrl[id] = pos;
-    else
-        d_->qpos[id] = pos;
+    if (dyn_ && id < m_->nu)
+        d_->ctrl[id] = pos;   // ctrl 按执行器索引
+    else if (!dyn_ && id < m_->nq)
+        d_->qpos[id] = pos;   // qpos 按广义坐标索引
     cmd_pos_[id] = pos;
     return 0;
 }
@@ -363,11 +367,13 @@ int HardwareMJ::SetJointTorque(int /*id*/, double /*torque*/) {
 int HardwareMJ::SetPosition(double *pos) {
     if (!(m_ && d_)) return -1;
     std::lock_guard<std::mutex> lk(mtx_);
-    for (int i = 0; i < nu_; ++i) {
-        if (dyn_)
-            d_->ctrl[i] = pos[i];
-        else
-            d_->qpos[i] = pos[i];
+    int nact = std::min(nv_, m_->nu);
+    int nq   = std::min(nv_, m_->nq);
+    for (int i = 0; i < nv_; ++i) {
+        if (dyn_ && i < nact)
+            d_->ctrl[i] = pos[i];   // ctrl 按执行器索引
+        else if (!dyn_ && i < nq)
+            d_->qpos[i] = pos[i];   // qpos 按广义坐标索引
         cmd_pos_[i] = pos[i];
     }
     return 0;
@@ -402,18 +408,18 @@ void HardwareMJ::fillRobotData(RobotData &rd) {
 
     std::lock_guard<std::mutex> lk(mtx_);
 
-    rd.joint_count = nu_;
+    rd.joint_count = nv_;
 
-    rd.pos.resize(nu_);
-    rd.vel.resize(nu_);
-    rd.torque.resize(nu_);
-    rd.load_torque.resize(nu_);
-    rd.cmd_pos.resize(nu_);
-    rd.cmd_vel.resize(nu_);
-    rd.cmd_torque.resize(nu_);
-    rd.joint_enabled.assign(nu_, true);   // 仿真里默认全部使能
+    rd.pos.resize(nv_);
+    rd.vel.resize(nv_);
+    rd.torque.resize(nv_);
+    rd.load_torque.resize(nv_);
+    rd.cmd_pos.resize(nv_);
+    rd.cmd_vel.resize(nv_);
+    rd.cmd_torque.resize(nv_);
+    rd.joint_enabled.assign(nv_, true);   // 仿真里默认全部使能
 
-    for (int i = 0; i < nu_; ++i) {
+    for (int i = 0; i < nv_; ++i) {
         rd.pos[i]         = sim_pos_[i];
         rd.vel[i]         = sim_vel_[i];
         rd.torque[i]      = sim_trq_[i];

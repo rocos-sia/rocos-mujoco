@@ -105,7 +105,13 @@ int main(int argc, char *argv[]) {
         } else if (arg == "--config" && i + 1 < argc) {
             config_path = argv[++i];
         } else if (arg == "--ecat-id" && i + 1 < argc) {
-            ecat_id = std::atoi(argv[++i]);
+            char *end = nullptr;
+            long val = std::strtol(argv[++i], &end, 10);
+            if (end == argv[i] || *end != '\0') {
+                std::cerr << "无效的 --ecat-id: " << argv[i] << std::endl;
+                return 1;
+            }
+            ecat_id = static_cast<int>(val);
         } else if (arg == "--cycle-time" && i + 1 < argc) {
             cycle_time = std::atof(argv[++i]);
         } else if (arg == "--duration" && i + 1 < argc) {
@@ -118,6 +124,8 @@ int main(int argc, char *argv[]) {
     }
 
     // ---- 路径解析（尝试多个目录前缀以适配不同工作目录）------------------
+    // 当前关闭：在单次运行中，显式 --urdf / --config 参数已足够。
+    // 如需支持从不同工作目录启动（e.g. build/、rocos-app/），取消下方注释：
     // urdf_path   = resolveFile(urdf_path);
     // config_path = resolveFile(config_path);
 

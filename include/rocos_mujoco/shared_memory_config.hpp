@@ -174,6 +174,8 @@ public:
     // -----------------------------------------------------------------------
     static SharedMemoryConfig *getInstance(int id = 0) {
         static std::map<int, SharedMemoryConfig *> instances;
+        static std::mutex inst_mutex;
+        std::lock_guard<std::mutex> lk(inst_mutex);
         if (instances.find(id) == instances.end()) {
             std::cout << "[SHM] Create new SharedMemoryConfig instance: " << id << std::endl;
             instances[id] = new SharedMemoryConfig(id);
@@ -555,8 +557,6 @@ public:
             }
         return nullptr;
     }
-
-    std::string to_string() { return std::string{}; }
 
     // -----------------------------------------------------------------------
     // Public data (accessible by both sides for direct struct manipulation)

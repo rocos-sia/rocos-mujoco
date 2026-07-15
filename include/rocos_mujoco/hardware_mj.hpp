@@ -70,7 +70,7 @@ public:
     // ---- 直接访问 -------------------------------------------------
     mjModel *model() const { return m_; }
     mjData  *data()  const { return d_; }
-    int      jointNum() const { return nu_; }
+    int      jointNum() const { return nv_; }
 
     // ---- RoboChargeX 风格单关节接口 --------------------------------
     int  GetJointNum(int *num);
@@ -120,7 +120,7 @@ private:
     bool        dyn_;
     mjModel    *m_  = nullptr;
     mjData     *d_  = nullptr;
-    int         nu_ = 0;
+    int         nv_ = 0;   ///< 自由度数量 (m_->nv)，与执行器数量 (m_->nu) 不同
 
     // ---- GLFW ----------------------------------------------------
     GLFWwindow *window_ = nullptr;

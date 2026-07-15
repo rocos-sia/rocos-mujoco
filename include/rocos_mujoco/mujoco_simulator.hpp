@@ -70,6 +70,10 @@ public:
     /// @brief 获取当前 status_word
     uint16_t statusWord() const;
 
+    /// @brief 触发故障 —— 模拟驱动检测到过流/过温/跟随误差等异常
+    ///        状态转为 FaultReactionActive→Fault，需 Fault Reset 才能恢复
+    void triggerFault() { if (state_ != 0 && state_ != 7) state_ = 6; }
+
 private:
     uint8_t  state_{1};         // 初始 = SwitchOnDisabled
     bool     fault_reset_prev_{false};  // bit7 上升沿检测
@@ -97,6 +101,7 @@ public:
     void run(double duration_sec = -1.0);
 
     void enableVisualization(bool enable = true) { visualize_ = enable; }
+    void setVerbose(bool verbose = true)         { verbose_  = verbose; }
 
     // ---- Accessors ----------------------------------------------------
     double getSimTime()    const { return sim_time_; }
@@ -166,6 +171,10 @@ private:
         // 下使能时锁死的目标位置（记录下使能瞬间的 qpos）
         double hold_position{0.0};
         bool   hold_valid{false};
+
+        // 位置 PID 积分器（消除重力等持续扰动引起的稳态误差）
+        double pos_integral{0.0};
+        int8_t prev_mode_of_operation{-1};  // 用于检测模式切换以重置积分
     };
     std::vector<JointEntry> joints_;
 
@@ -197,10 +206,12 @@ private:
     // ---- Visualization ------------------------------------------------
     HardwareMJ *visualizer_ = nullptr;
     bool        visualize_  = false;
+    bool        verbose_    = true;
 
-    // ---- PD gains -----------------------------------------------------
-    static constexpr double KP_ = 1000.0;
-    static constexpr double KD_ = 50.0;
+    // ---- PID gains (position loop, applied via qfrc_applied) -----------
+    static constexpr double KP_ = 1000.0;   // 比例增益 [Nm/rad] (当前未使用，执行器 kp 替代)
+    static constexpr double KI_ = 5000.0;   // 积分增益 [Nm/(rad·s)]
+    static constexpr double KD_ = 80.0;     // 速度阻尼 [Nm/(rad/s)] (当前未使用，执行器 kv 替代)
     static constexpr double KV_ = 50.0;
 };
 

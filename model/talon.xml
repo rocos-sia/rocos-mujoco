@@ -100,13 +100,13 @@
 
     <actuator>
     <!-- joint_1 到 joint_7: 转动关节，位置控制带 PD -->
-    <position joint="joint_1" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
-    <position joint="joint_2" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
-    <position joint="joint_3" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
-    <position joint="joint_4" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
-    <position joint="joint_5" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
-    <position joint="joint_6" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
-    <position joint="joint_7" kp="2000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_1" kp="20000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_2" kp="20000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_3" kp="20000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_4" kp="20000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_5" kp="20000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_6" kp="20000" kv="500" ctrlrange="-3.14 3.14"/>
+    <position joint="joint_7" kp="20000" kv="500" ctrlrange="-3.14 3.14"/>
   </actuator>
 
 </mujoco>
