@@ -210,7 +210,7 @@ private:
 
     // ---- PID gains (position loop, applied via qfrc_applied) -----------
     static constexpr double KP_ = 1000.0;   // 比例增益 [Nm/rad] (当前未使用，执行器 kp 替代)
-    static constexpr double KI_ = 5000.0;   // 积分增益 [Nm/(rad·s)]
+    static constexpr double KI_ = 0.0;   // 积分增益 [Nm/(rad·s)]
     static constexpr double KD_ = 80.0;     // 速度阻尼 [Nm/(rad/s)] (当前未使用，执行器 kv 替代)
     static constexpr double KV_ = 50.0;
 };

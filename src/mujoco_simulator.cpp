@@ -728,11 +728,17 @@ void MujocoSimulator::applyControl() {
             double actual = d_->qpos[dof];
             double error  = tp - actual;
             double dt     = cycle_time_us_ / 1e6;
+
+            // debug: 打印 joint_2 的 target vs actual
+            if (dof == 1) {
+                static int dbg_cnt = 0;
+                if (++dbg_cnt % 50 == 0) {
+                    printf("[CSP j2] target=%.6f rad  actual=%.6f rad  err=%.6f rad (%.4f°)\n",
+                           tp, actual, error, error * 180.0 / M_PI);
+                }
+            }
+
             j.pos_integral += error * dt;
-            constexpr double kMaxIntegralTorque = 50.0;
-            double max_integral = kMaxIntegralTorque / KI_;
-            j.pos_integral = std::max(-max_integral,
-                               std::min(max_integral, j.pos_integral));
             d_->qfrc_applied[dof] = d_->qfrc_bias[dof]    // ← 重力前馈
                                   + KI_ * j.pos_integral;  // ← 积分残差修正
             break;
@@ -785,7 +791,7 @@ void MujocoSimulator::stepPhysics() {
     if (verbose_) {
         static int cnt = 0;
         if (++cnt % 1000 == 0 && m_->nu > 0) {
-            int i = 0;  // 使用第一个执行器（而非硬编码 1）
+            int i = 1;  // 使用第一个执行器（而非硬编码 1）
             std::cout
                 << "[DEBUG] step=" << cnt
                 << " ctrl=" << d_->ctrl[i]
