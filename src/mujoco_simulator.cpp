@@ -786,6 +786,43 @@ void MujocoSimulator::applyControl() {
 // ==========================================================================
 
 void MujocoSimulator::stepPhysics() {
+    // ---- 外力施加（来自可视化窗口的交互式外力）--------------------------
+#ifdef ROCOS_MUJOCO_ENABLE_VISUALIZATION
+    if (visualizer_ != nullptr) {
+        const auto &fs = visualizer_->getForceState();
+        // 先清零所有 xfrc_applied
+        for (int i = 0; i < m_->nbody; ++i) {
+            for (int k = 0; k < 6; ++k)
+                d_->xfrc_applied[6 * i + k] = 0.0;
+        }
+        // 施加选中 body 的外力
+        if (fs.active && fs.body_id >= 0 && fs.body_id < m_->nbody) {
+            int b = fs.body_id;
+            double len =
+                std::sqrt(fs.direction[0] * fs.direction[0] +
+                          fs.direction[1] * fs.direction[1] +
+                          fs.direction[2] * fs.direction[2]);
+            if (len > 1e-8) {
+                double s = fs.magnitude / len;
+                // 力（世界坐标系，作用在 COM）
+                d_->xfrc_applied[6 * b + 0] = fs.direction[0] * s;
+                d_->xfrc_applied[6 * b + 1] = fs.direction[1] * s;
+                d_->xfrc_applied[6 * b + 2] = fs.direction[2] * s;
+                // 力矩 = r × f（选点不在 COM 时产生力矩）
+                double rx = fs.world_pos[0] - d_->xpos[3 * b + 0];
+                double ry = fs.world_pos[1] - d_->xpos[3 * b + 1];
+                double rz = fs.world_pos[2] - d_->xpos[3 * b + 2];
+                double fx = d_->xfrc_applied[6 * b + 0];
+                double fy = d_->xfrc_applied[6 * b + 1];
+                double fz = d_->xfrc_applied[6 * b + 2];
+                d_->xfrc_applied[6 * b + 3] = ry * fz - rz * fy;
+                d_->xfrc_applied[6 * b + 4] = rz * fx - rx * fz;
+                d_->xfrc_applied[6 * b + 5] = rx * fy - ry * fx;
+            }
+        }
+    }
+#endif
+
     mj_step(m_, d_);
 
     if (verbose_) {

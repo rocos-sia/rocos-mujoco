@@ -19,6 +19,69 @@
 #include <thread>
 
 namespace rocos_mujoco {
+namespace {
+
+// ==========================================================================
+// Camera ray helper — compute world-space ray from mouse pixel coordinates
+// ==========================================================================
+struct CameraRay {
+    mjtNum origin[3];
+    mjtNum direction[3];
+};
+
+CameraRay computeCameraRay(const mjvScene &scn,
+                           double mouse_x, double mouse_y,
+                           int viewport_w, int viewport_h) {
+    CameraRay ray{};
+    const auto &cam = scn.camera[0];
+
+    // 归一化设备坐标 [-1, 1]，左上角为 (-1, 1)，右下角为 (1, -1)
+    double nx = (2.0 * mouse_x) / static_cast<double>(viewport_w) - 1.0;
+    double ny = 1.0 - (2.0 * mouse_y) / static_cast<double>(viewport_h);
+
+    // 相机在世界坐标系中的基向量
+    mjtNum forward[3] = {cam.forward[0],  cam.forward[1],  cam.forward[2]};
+    mjtNum up[3]      = {cam.up[0],       cam.up[1],       cam.up[2]};
+    mjtNum right[3];
+    mju_cross(right, forward, up);
+    mju_normalize3(right);
+
+    // MuJoCo 的 frustum 定义在 frustum_near 处（通常 ~0.01），而非单位距离。
+    // 必须缩放到 z=1，否则所有像素的射线方向几乎完全相同 —— 这就是
+    // "始终点选同一个位置" 的根本原因。
+    double znear = cam.frustum_near;
+    if (znear < 1e-6) znear = 0.01;  // 安全兜底
+    double inv_znear = 1.0 / znear;
+
+    // 近平面处的半高 / 半宽
+    double vert_half_near   = (cam.frustum_top - cam.frustum_bottom) * 0.5;
+    double vert_center_near = (cam.frustum_top + cam.frustum_bottom) * 0.5;
+    double aspect = static_cast<double>(viewport_w) /
+                    static_cast<double>(viewport_h);
+
+    // 缩放到单位距离 (z=1)
+    double half_h_at_1   = vert_half_near * inv_znear;    // = tan(fovy/2)
+    double center_at_1_h = cam.frustum_center * inv_znear;
+    double center_at_1_v = vert_center_near * inv_znear;
+
+    // 相机空间中的目标点（z=1 沿 forward）
+    double cx = center_at_1_h + nx * half_h_at_1 * aspect;
+    double cy = center_at_1_v + ny * half_h_at_1;
+
+    // 世界空间中的射线方向
+    ray.direction[0] = cx * right[0] + cy * up[0] + forward[0];
+    ray.direction[1] = cx * right[1] + cy * up[1] + forward[1];
+    ray.direction[2] = cx * right[2] + cy * up[2] + forward[2];
+    mju_normalize3(ray.direction);
+
+    ray.origin[0] = cam.pos[0];
+    ray.origin[1] = cam.pos[1];
+    ray.origin[2] = cam.pos[2];
+
+    return ray;
+}
+
+}  // namespace (anonymous)
 
 // ==========================================================================
 // 构造 / 析构
@@ -199,7 +262,72 @@ void HardwareMJ::renderLoop() {
         }
 
         mjv_updateScene(m_, d_, &opt_, nullptr, &cam_, mjCAT_ALL, &scn_);
+
+        // ---- 外力可视化 ----------------------------------------------------
+        if (force_state_.active && force_state_.body_id >= 0 &&
+            force_state_.body_id < m_->nbody) {
+            int b = force_state_.body_id;
+
+            // 更新受力点的世界坐标（从 body-local 转换）
+            mjtNum bw[3];
+            mju_mulMatVec(bw, d_->xmat + 9 * b, force_state_.local_pos, 3, 3);
+            force_state_.world_pos[0] = d_->xpos[3 * b + 0] + bw[0];
+            force_state_.world_pos[1] = d_->xpos[3 * b + 1] + bw[1];
+            force_state_.world_pos[2] = d_->xpos[3 * b + 2] + bw[2];
+
+            // 受力点小球
+            if (scn_.ngeom < scn_.maxgeom) {
+                auto *g   = scn_.geoms + scn_.ngeom;
+                float  red[4]       = {1.0f, 0.15f, 0.1f, 0.9f};
+                mjtNum sphere_sz[3] = {0.015, 0, 0};
+                mjv_initGeom(g, mjGEOM_SPHERE, sphere_sz,
+                             force_state_.world_pos, nullptr, red);
+                scn_.ngeom++;
+            }
+
+            // 力方向箭头
+            if (scn_.ngeom < scn_.maxgeom) {
+                auto *g   = scn_.geoms + scn_.ngeom;
+                float  yellow[4]     = {1.0f, 0.75f, 0.1f, 0.9f};
+                mjtNum arrow_sz[3]   = {0.004, 0.012, 0.025};
+                mjtNum arrow_end[3];
+                double arrow_len =
+                    0.06 + force_state_.magnitude * 0.004;
+                for (int k = 0; k < 3; ++k)
+                    arrow_end[k] = force_state_.world_pos[k] +
+                                   force_state_.direction[k] * arrow_len;
+                mjv_initGeom(g, mjGEOM_ARROW, arrow_sz,
+                             nullptr, nullptr, yellow);
+                mjv_connector(g, mjGEOM_ARROW, 0.006,
+                              force_state_.world_pos, arrow_end);
+                scn_.ngeom++;
+            }
+        }
+
         mjr_render(mjrRect{0, 0, width_, height_}, &scn_, &con_);
+
+        // ---- 外力信息文字叠层（必须在 mjr_render 之后，否则会被覆盖）--------
+        if (force_state_.active && force_state_.body_id >= 0) {
+            char title[128], body[256];
+            std::snprintf(title, sizeof(title),
+                          "EXTERNAL FORCE  |  Body: %s (id=%d)",
+                          mj_id2name(m_, mjOBJ_BODY,
+                                     force_state_.body_id),
+                          force_state_.body_id);
+            std::snprintf(body, sizeof(body),
+                          "Magnitude: %.1f N\n"
+                          "Direction: [%+.3f, %+.3f, %+.3f]\n"
+                          "[+/-] or Scroll  adjust magnitude\n"
+                          "[Esc]  clear force\n"
+                          "[Drag] change direction",
+                          force_state_.magnitude,
+                          force_state_.direction[0],
+                          force_state_.direction[1],
+                          force_state_.direction[2]);
+            mjr_overlay(mjFONT_SHADOW, mjGRID_TOPLEFT,
+                        mjrRect{0, 0, width_, height_},
+                        title, body, &con_);
+        }
         glfwSwapBuffers(window_);
         glfwPollEvents();
     }
@@ -444,21 +572,159 @@ void HardwareMJ::fillRobotData(RobotData &rd) {
 // 静态 GLFW 回调
 // ==========================================================================
 
-void HardwareMJ::cbKeyboard(GLFWwindow *w, int key, int, int act, int) {
+void HardwareMJ::cbKeyboard(GLFWwindow *w, int key, int, int act, int /*mods*/) {
     auto *p = static_cast<HardwareMJ *>(glfwGetWindowUserPointer(w));
-    if (act == GLFW_PRESS && key == GLFW_KEY_BACKSPACE)
+    if (act != GLFW_PRESS && act != GLFW_REPEAT) return;
+
+    switch (key) {
+    case GLFW_KEY_BACKSPACE:
         mjv_defaultCamera(&p->cam_);
+        break;
+    case GLFW_KEY_ESCAPE:
+        if (p->force_state_.active)
+            std::cout << "[MJ] Force cleared via ESC\n";
+        p->force_state_ = ForceInteractionState{};
+        break;
+    case GLFW_KEY_EQUAL:
+    case GLFW_KEY_KP_ADD:
+        if (p->force_state_.active)
+            p->force_state_.magnitude =
+                std::max(0.1, p->force_state_.magnitude + 0.1);
+        break;
+    case GLFW_KEY_MINUS:
+    case GLFW_KEY_KP_SUBTRACT:
+        if (p->force_state_.active)
+            p->force_state_.magnitude =
+                std::max(0.1, p->force_state_.magnitude - 0.1);
+        break;
+    default:
+        break;
+    }
 }
 
 void HardwareMJ::cbMouseButton(GLFWwindow *w, int btn, int act, int) {
     auto *p = static_cast<HardwareMJ *>(glfwGetWindowUserPointer(w));
+
+    if (btn == GLFW_MOUSE_BUTTON_LEFT) {
+        bool ctrl = (glfwGetKey(w, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+                     glfwGetKey(w, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS);
+
+        if (act == GLFW_PRESS && ctrl) {
+            // ---- Ctrl+Click: 射线拾取 body，进入力模式 -----------------
+            double mx = 0, my = 0;
+            glfwGetCursorPos(w, &mx, &my);
+
+            // 确保 scn_.camera[0] 与当前 cam_ 同步
+            mjv_updateCamera(p->m_, p->d_, &p->cam_, &p->scn_);
+
+            CameraRay ray =
+                computeCameraRay(p->scn_, mx, my, p->width_, p->height_);
+            int geomid[1] = {-1};
+            // 使用实际的 geomgroup 配置（而非 NULL），确保符合可视化设置
+            mjtNum dist = mj_ray(p->m_, p->d_, ray.origin, ray.direction,
+                                 p->opt_.geomgroup, 1, -1, geomid);
+
+            bool picked = false;
+            if (dist >= 0 && geomid[0] >= 0 &&
+                geomid[0] < p->m_->ngeom) {
+                int body_id = p->m_->geom_bodyid[geomid[0]];
+                if (body_id > 0) {  // 排除 world body (id=0) — 地板等
+                    p->force_state_.active   = true;
+                    p->force_state_.dragging = true;  // 立即进入拖拽
+                    p->force_state_.body_id  = body_id;
+
+                    // 计算击中点的世界坐标
+                    mjtNum hit[3];
+                    for (int k = 0; k < 3; ++k)
+                        hit[k] = ray.origin[k] +
+                                 ray.direction[k] * dist;
+
+                    // 转换为 body-local 坐标（跟随 body 移动）
+                    mjtNum delta[3];
+                    for (int k = 0; k < 3; ++k)
+                        delta[k] =
+                            hit[k] - p->d_->xpos[3 * body_id + k];
+                    mjtNum xmat_inv[9];
+                    mju_transpose(xmat_inv,
+                                  p->d_->xmat + 9 * body_id, 3, 3);
+                    mju_mulMatVec(p->force_state_.local_pos,
+                                  xmat_inv, delta, 3, 3);
+                    for (int k = 0; k < 3; ++k)
+                        p->force_state_.world_pos[k] = hit[k];
+
+                    // 默认力方向：从 hit 点指向相机（模拟推向外）
+                    mjtNum from_body[3];
+                    for (int k = 0; k < 3; ++k)
+                        from_body[k] = p->scn_.camera[0].pos[k] -
+                                       hit[k];
+                    double len = std::sqrt(
+                        from_body[0] * from_body[0] +
+                        from_body[1] * from_body[1] +
+                        from_body[2] * from_body[2]);
+                    if (len > 1e-6) {
+                        for (int k = 0; k < 3; ++k)
+                            p->force_state_.direction[k] =
+                                from_body[k] / len;
+                    } else {
+                        p->force_state_.direction[0] = 0;
+                        p->force_state_.direction[1] = 0;
+                        p->force_state_.direction[2] = -1;
+                    }
+
+                    picked = true;
+                    std::cout << "[MJ] Force pick: body="
+                              << mj_id2name(
+                                     p->m_, mjOBJ_BODY, body_id)
+                              << " (id=" << body_id << ")"
+                              << " geom=" << geomid[0]
+                              << " dist=" << dist
+                              << " hit=[" << hit[0] << "," << hit[1]
+                              << "," << hit[2] << "]"
+                              << " dir=[" << p->force_state_.direction[0]
+                              << "," << p->force_state_.direction[1]
+                              << "," << p->force_state_.direction[2]
+                              << "]\n";
+                }
+            }
+
+            if (!picked) {
+                // 未命中任何 robot body —— 清除外力
+                if (p->force_state_.active) {
+                    std::cout << "[MJ] Force cleared (miss or hit "
+                              << "background, geomid=" << geomid[0]
+                              << " dist=" << dist << ")\n";
+                }
+                p->force_state_ = ForceInteractionState{};
+            }
+            // Ctrl+Click 不触发相机旋转
+            p->last_x_ = mx;
+            p->last_y_ = my;
+            return;
+        }
+
+        if (act == GLFW_PRESS) {
+            if (p->force_state_.active) {
+                // 力模式下普通左键：开始拖拽调方向
+                p->force_state_.dragging = true;
+                glfwGetCursorPos(w, &p->last_x_, &p->last_y_);
+            } else {
+                // 普通模式：相机旋转
+                p->btn_left_ = true;
+                glfwGetCursorPos(w, &p->last_x_, &p->last_y_);
+            }
+        } else {  // RELEASE
+            p->force_state_.dragging = false;
+            p->btn_left_             = false;
+        }
+        return;
+    }
+
+    // 中键和右键：只在非力拖拽模式时处理相机
     if (act == GLFW_PRESS) {
-        if (btn == GLFW_MOUSE_BUTTON_LEFT)   p->btn_left_   = true;
         if (btn == GLFW_MOUSE_BUTTON_RIGHT)  p->btn_right_  = true;
         if (btn == GLFW_MOUSE_BUTTON_MIDDLE) p->btn_middle_ = true;
         glfwGetCursorPos(w, &p->last_x_, &p->last_y_);
     } else {
-        if (btn == GLFW_MOUSE_BUTTON_LEFT)   p->btn_left_   = false;
         if (btn == GLFW_MOUSE_BUTTON_RIGHT)  p->btn_right_  = false;
         if (btn == GLFW_MOUSE_BUTTON_MIDDLE) p->btn_middle_ = false;
     }
@@ -467,10 +733,49 @@ void HardwareMJ::cbMouseButton(GLFWwindow *w, int btn, int act, int) {
 void HardwareMJ::cbMouseMove(GLFWwindow *w, double x, double y) {
     auto *p = static_cast<HardwareMJ *>(glfwGetWindowUserPointer(w));
     if (!p->m_) return;
-    if (!p->btn_left_ && !p->btn_right_ && !p->btn_middle_) return;
+    if (!p->btn_left_ && !p->btn_right_ && !p->btn_middle_ &&
+        !p->force_state_.dragging)
+        return;
 
     double dx = (x - p->last_x_) / p->width_;
     double dy = (y - p->last_y_) / p->height_;
+
+    // ---- 力方向拖拽 --------------------------------------------------
+    if (p->force_state_.dragging) {
+        // 确保相机数据是最新的
+        mjv_updateCamera(p->m_, p->d_, &p->cam_, &p->scn_);
+
+        const auto &cam = p->scn_.camera[0];
+        // 相机在世界系的方向向量
+        mjtNum forward[3] = {cam.forward[0], cam.forward[1],
+                             cam.forward[2]};
+        mjtNum up[3]      = {cam.up[0], cam.up[1], cam.up[2]};
+        mjtNum right[3];
+        mju_cross(right, forward, up);
+        mju_normalize3(right);
+
+        // 屏幕 dx,dy → 世界系力方向增量
+        double sensitivity = 2.5;
+        auto &dir          = p->force_state_.direction;
+        dir[0] += sensitivity * (dx * right[0] - dy * up[0]);
+        dir[1] += sensitivity * (dx * right[1] - dy * up[1]);
+        dir[2] += sensitivity * (dx * right[2] - dy * up[2]);
+
+        // 归一化
+        double len =
+            std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+        if (len > 1e-8) {
+            dir[0] /= len;
+            dir[1] /= len;
+            dir[2] /= len;
+        }
+
+        p->last_x_ = x;
+        p->last_y_ = y;
+        return;
+    }
+
+    // ---- 相机操作（原有逻辑）------------------------------------------
     if (glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
         dx *= p->kShiftScale; dy *= p->kShiftScale;
     }
@@ -494,6 +799,16 @@ void HardwareMJ::cbMouseMove(GLFWwindow *w, double x, double y) {
 void HardwareMJ::cbScroll(GLFWwindow *w, double, double yoff) {
     auto *p = static_cast<HardwareMJ *>(glfwGetWindowUserPointer(w));
     if (!p->m_) return;
+
+    // 力模式下滚轮调节力量大小
+    if (p->force_state_.active) {
+        p->force_state_.magnitude += yoff * 0.1;
+        p->force_state_.magnitude =
+            std::max(0.1, std::min(p->force_state_.magnitude, 500.0));
+        return;
+    }
+
+    // 原有缩放逻辑
     double dy = -yoff * p->kZoomSpeed;
     if (glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) dy *= p->kShiftScale;
     mjv_moveCamera(p->m_, mjMOUSE_ZOOM, 0, dy, &p->scn_, &p->cam_);
