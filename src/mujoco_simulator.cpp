@@ -352,6 +352,7 @@ bool MujocoSimulator::initialize() {
     std::cout << "\033[1;32m[INFO]\033[0m Shared memory created\n";
 
     // 4. Initial bus state
+    shm_->ecatBus->dt             = static_cast<uint32_t>(cycle_time_us_);
     shm_->ecatBus->current_state = ECAT_STATE_OP;
     shm_->ecatBus->is_authorized = true;
     shm_->ecatBus->slave_num     = static_cast<int>(

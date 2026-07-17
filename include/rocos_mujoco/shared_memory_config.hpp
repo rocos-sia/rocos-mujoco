@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
@@ -101,6 +102,8 @@ struct EcatBus {
     double avg_cycle_time{0.0};
     double current_cycle_time{0.0};
 
+    uint32_t dt{0};  ///< control cycle period [microseconds], e.g. 1000 = 1 kHz
+    
     bool   resetCycleTime{false};
 
     int    current_state{ECAT_STATE_INIT};
@@ -424,6 +427,7 @@ public:
     double getBusMinCycleTime()     const { return ecatBus->min_cycle_time;     }
     double getBusMaxCycleTime()     const { return ecatBus->max_cycle_time;     }
     double getBusAvgCycleTime()     const { return ecatBus->avg_cycle_time;     }
+    uint32_t getDt()                const { return ecatBus->dt;                 }
     double getBusCurrentCycleTime() const { return ecatBus->current_cycle_time; }
     bool   isAuthorized()           const { return ecatBus->is_authorized;      }
     long   getTimestamp()           const { return ecatBus->timestamp;          }
