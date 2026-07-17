@@ -38,6 +38,24 @@ struct RobotData {
 
 using Callback = std::function<void(RobotData& robot_data)>;
 
+/// @brief External force interaction state for mouse-driven force application.
+///
+/// Usage in the GLFW window:
+///   Ctrl + Left Click   — pick a body on the robot (ray cast), enter force mode
+///   Left Click + Drag   — change the force direction (in the camera view plane)
+///   Scroll / + / -      — adjust the force magnitude
+///   Esc                 — clear the force and exit force mode
+struct ForceInteractionState {
+    bool   active       = false;   ///< force mode is active
+    int    body_id      = -1;      ///< selected MuJoCo body id
+    double local_pos[3] = {0,0,0}; ///< click point in body-local frame
+    double world_pos[3] = {0,0,0}; ///< click point in world frame (updated per-frame)
+    double force[6]     = {0,0,0,0,0,0}; ///< applied wrench [fx,fy,fz,tx,ty,tz] in world frame
+    double magnitude    = 10.0;    ///< total force magnitude [N]
+    double direction[3] = {0, 0, -1}; ///< force unit direction in world frame
+    bool   dragging     = false;   ///< mouse drag is in progress
+};
+
 class HardwareMJ {
 public:
     /// @param model_path   MJCF/URDF 模型文件路径（与 RoboChargeX 不同：RoboChargeX 用 model_id，
@@ -101,6 +119,10 @@ public:
     // ---- 回调（与 RoboChargeX 一致）--------------------------------
     int  SetCallback(Callback callback);
 
+    // ---- External force interaction ---------------------------------
+    const ForceInteractionState& getForceState() const { return force_state_; }
+    void clearForceState() { force_state_ = ForceInteractionState{}; }
+
     // ---- 传感器 ---------------------------------------------------
     std::string name() const { return "HardwareMJ (MuJoCo)"; }
 
@@ -162,6 +184,9 @@ private:
 
     // ---- 回调 ----------------------------------------------------
     Callback callback_;
+
+    // ---- 外力交互状态 --------------------------------------------
+    ForceInteractionState force_state_;
 };
 
 }  // namespace rocos_mujoco
