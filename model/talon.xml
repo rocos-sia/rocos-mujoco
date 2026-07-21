@@ -57,7 +57,7 @@
                     <joint name="joint_2" class="joint_1" />
                     <geom class="visual" mesh="link_2" />
                     <body name="link_3" pos="0 0.41 0" quat="-0.707 0.707 0 0">
-                        <inertial mass="3.685" pos="0.000 0.009 -0.058" diaginertia="0.034 0.031 0.006"/> <!--0.034 0.021 0.006 不满足三角不等式 A+B>=C -->
+                        <inertial mass="3.685" pos="0.000 0.009 -0.058" diaginertia="0.034 0.031 0.006"/>
                         <joint name="joint_3" class="joint_1" />
                         <geom class="visual" mesh="link_3" />
                         <body name="link_4" pos="0 0 0" quat="0.707 0.707 0 0">
