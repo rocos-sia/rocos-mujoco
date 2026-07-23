@@ -730,15 +730,6 @@ void MujocoSimulator::applyControl() {
             double error  = tp - actual;
             double dt     = cycle_time_us_ / 1e6;
 
-            // debug: 打印 joint_2 的 target vs actual
-            if (dof == 1) {
-                static int dbg_cnt = 0;
-                if (++dbg_cnt % 50 == 0) {
-                    printf("[CSP j2] target=%.6f rad  actual=%.6f rad  err=%.6f rad (%.4f°)\n",
-                           tp, actual, error, error * 180.0 / M_PI);
-                }
-            }
-
             j.pos_integral += error * dt;
             d_->qfrc_applied[dof] = d_->qfrc_bias[dof]    // ← 重力前馈
                                   + KI_ * j.pos_integral;  // ← 积分残差修正
@@ -865,7 +856,7 @@ void MujocoSimulator::writeSensorData() {
         double tau  = (dof >= 0) ? (d_->qfrc_actuator[dof] + d_->qfrc_applied[dof]) : 0.0;
 
         int32_t pc = unitToCnt(q,    j.cnt_per_unit, j.ratio, j.offset_pos_cnt);
-        int32_t vc = unitToCnt(qdot, j.cnt_per_unit, j.ratio, 0);
+        int32_t vc = unitToCnt(qdot, j.cnt_per_unit, j.ratio, j.offset_pos_cnt);
         int16_t tc = static_cast<int16_t>(tau * j.torque_per_unit);
 
         auto off = [&](const char *key) {
