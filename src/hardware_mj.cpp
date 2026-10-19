@@ -10,6 +10,7 @@
 
 #include <GLFW/glfw3.h>
 #include <mujoco/mujoco.h>
+#include <png.h>
 
 #include <algorithm>
 #include <chrono>
@@ -17,9 +18,100 @@
 #include <cstring>
 #include <iostream>
 #include <thread>
+#include <vector>
+
+#include "logo_data.hpp"
+#include "simulation_menu.hpp"
 
 namespace rocos_mujoco {
 namespace {
+
+constexpr int kLogoDisplayWidth = 134;
+constexpr int kLogoMargin = 12;
+
+struct LogoTexture {
+  GLuint id = 0;
+  int height = 0;
+};
+
+LogoTexture LoadLogoTexture() {
+  png_image image{};
+  image.version = PNG_IMAGE_VERSION;
+  if (!png_image_begin_read_from_memory(&image, kLogoPng, sizeof(kLogoPng))) {
+    std::cerr << "[MJ] Cannot read logo: " << image.message << '\n';
+    png_image_free(&image);
+    return {};
+  }
+  image.format = PNG_FORMAT_RGBA;
+  std::vector<unsigned char> pixels(PNG_IMAGE_SIZE(image));
+  if (!png_image_finish_read(&image, nullptr, pixels.data(), 0, nullptr)) {
+    std::cerr << "[MJ] Cannot decode logo: " << image.message << '\n';
+    png_image_free(&image);
+    return {};
+  }
+
+  LogoTexture logo;
+  logo.height = (kLogoDisplayWidth * image.height + image.width / 2) / image.width;
+  glPushAttrib(GL_TEXTURE_BIT);
+  glGenTextures(1, &logo.id);
+  glBindTexture(GL_TEXTURE_2D, logo.id);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, image.width, image.height, 0,
+              GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+  glPopAttrib();
+  png_image_free(&image);
+  return logo;
+}
+
+// Use window coordinates for a consistent size on high-DPI displays.
+void DrawLogo(const LogoTexture& logo, int width, int height,
+              int framebuffer_width, int framebuffer_height) {
+  if (!logo.id || width <= 0 || height <= 0 ||
+      framebuffer_width <= 0 || framebuffer_height <= 0) {
+    return;
+  }
+  glPushAttrib(GL_ALL_ATTRIB_BITS);
+  glViewport(0, 0, framebuffer_width, framebuffer_height);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_LIGHTING);
+  glDisable(GL_CULL_FACE);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_ALPHA_TEST);
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glEnable(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, logo.id);
+  glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+  glMatrixMode(GL_PROJECTION);
+  glPushMatrix();
+  glLoadIdentity();
+  glOrtho(0, width, height, 0, -1, 1);
+  glMatrixMode(GL_MODELVIEW);
+  glPushMatrix();
+  glLoadIdentity();
+  glMatrixMode(GL_TEXTURE);
+  glPushMatrix();
+  glLoadIdentity();
+  glBegin(GL_QUADS);
+  glTexCoord2f(0, 0);
+  glVertex2i(kLogoMargin, kLogoMargin);
+  glTexCoord2f(1, 0);
+  glVertex2i(kLogoMargin + kLogoDisplayWidth, kLogoMargin);
+  glTexCoord2f(1, 1);
+  glVertex2i(kLogoMargin + kLogoDisplayWidth, kLogoMargin + logo.height);
+  glTexCoord2f(0, 1);
+  glVertex2i(kLogoMargin, kLogoMargin + logo.height);
+  glEnd();
+  glPopMatrix();
+  glMatrixMode(GL_MODELVIEW);
+  glPopMatrix();
+  glMatrixMode(GL_PROJECTION);
+  glPopMatrix();
+  glPopAttrib();
+}
 
 // ==========================================================================
 // Camera ray helper — compute world-space ray from mouse pixel coordinates
@@ -209,6 +301,8 @@ void HardwareMJ::renderLoop() {
 
     mjv_makeScene(m_, &scn_, 2000);
     mjr_makeContext(m_, &con_, 200);
+    const LogoTexture logo = LoadLogoTexture();
+    menu_ = std::make_unique<SimulationMenu>(m_);
 
     // ---- 4. 发出就绪信号，进入渲染循环 ----------------------------------
     ready_.store(true);
@@ -261,7 +355,12 @@ void HardwareMJ::renderLoop() {
             }
         }
 
-        mjv_updateScene(m_, d_, &opt_, nullptr, &cam_, mjCAT_ALL, &scn_);
+        {
+            std::lock_guard<std::mutex> lock(mtx_);
+            menu_->Update(m_, d_, &opt_);
+            mjv_updateScene(m_, d_, &opt_, nullptr, &cam_, mjCAT_ALL, &scn_);
+        }
+        menu_->ApplyTransparency(m_, &scn_);
 
         // ---- 外力可视化 ----------------------------------------------------
         if (force_state_.active && force_state_.body_id >= 0 &&
@@ -304,7 +403,10 @@ void HardwareMJ::renderLoop() {
             }
         }
 
-        mjr_render(mjrRect{0, 0, width_, height_}, &scn_, &con_);
+        int framebuffer_width, framebuffer_height;
+        glfwGetFramebufferSize(window_, &framebuffer_width, &framebuffer_height);
+        mjr_render(mjrRect{0, 0, framebuffer_width, framebuffer_height}, &scn_, &con_);
+        DrawLogo(logo, width_, height_, framebuffer_width, framebuffer_height);
 
         // ---- 外力信息文字叠层（必须在 mjr_render 之后，否则会被覆盖）--------
         if (force_state_.active && force_state_.body_id >= 0) {
@@ -324,16 +426,22 @@ void HardwareMJ::renderLoop() {
                           force_state_.direction[0],
                           force_state_.direction[1],
                           force_state_.direction[2]);
+            const int logo_space = logo.id && height_ > 0
+                ? (logo.height + 2 * kLogoMargin) * framebuffer_height / height_ : 0;
             mjr_overlay(mjFONT_SHADOW, mjGRID_TOPLEFT,
-                        mjrRect{0, 0, width_, height_},
+                        mjrRect{0, 0, framebuffer_width,
+                                std::max(0, framebuffer_height - logo_space)},
                         title, body, &con_);
         }
+        menu_->Render(framebuffer_width, framebuffer_height);
         glfwSwapBuffers(window_);
         glfwPollEvents();
     }
 
     // ---- 5. 清理 ---------------------------------------------------------
     ready_.store(false);
+    glDeleteTextures(1, &logo.id);
+    menu_.reset();
     mjv_freeScene(&scn_);
     mjr_freeContext(&con_);
     mj_deleteData(d_);   d_ = nullptr;
@@ -575,6 +683,8 @@ void HardwareMJ::fillRobotData(RobotData &rd) {
 void HardwareMJ::cbKeyboard(GLFWwindow *w, int key, int, int act, int /*mods*/) {
     auto *p = static_cast<HardwareMJ *>(glfwGetWindowUserPointer(w));
     if (act != GLFW_PRESS && act != GLFW_REPEAT) return;
+    if (key == GLFW_KEY_TAB && act == GLFW_REPEAT) return;
+    if (p->menu_ && p->menu_->HandleEvent(w, mjEVENT_KEY, 0, 0, 0, key)) return;
 
     switch (key) {
     case GLFW_KEY_BACKSPACE:
@@ -604,6 +714,8 @@ void HardwareMJ::cbKeyboard(GLFWwindow *w, int key, int, int act, int /*mods*/) 
 
 void HardwareMJ::cbMouseButton(GLFWwindow *w, int btn, int act, int) {
     auto *p = static_cast<HardwareMJ *>(glfwGetWindowUserPointer(w));
+    if (p->menu_ && p->menu_->HandleEvent(
+            w, act == GLFW_PRESS ? mjEVENT_PRESS : mjEVENT_RELEASE, btn)) return;
 
     if (btn == GLFW_MOUSE_BUTTON_LEFT) {
         bool ctrl = (glfwGetKey(w, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
@@ -732,6 +844,7 @@ void HardwareMJ::cbMouseButton(GLFWwindow *w, int btn, int act, int) {
 
 void HardwareMJ::cbMouseMove(GLFWwindow *w, double x, double y) {
     auto *p = static_cast<HardwareMJ *>(glfwGetWindowUserPointer(w));
+    if (p->menu_ && p->menu_->HandleEvent(w, mjEVENT_MOVE)) return;
     if (!p->m_) return;
     if (!p->btn_left_ && !p->btn_right_ && !p->btn_middle_ &&
         !p->force_state_.dragging)
@@ -796,8 +909,9 @@ void HardwareMJ::cbMouseMove(GLFWwindow *w, double x, double y) {
     p->last_x_ = x; p->last_y_ = y;
 }
 
-void HardwareMJ::cbScroll(GLFWwindow *w, double, double yoff) {
+void HardwareMJ::cbScroll(GLFWwindow *w, double xoff, double yoff) {
     auto *p = static_cast<HardwareMJ *>(glfwGetWindowUserPointer(w));
+    if (p->menu_ && p->menu_->HandleEvent(w, mjEVENT_SCROLL, 0, xoff, yoff)) return;
     if (!p->m_) return;
 
     // 力模式下滚轮调节力量大小

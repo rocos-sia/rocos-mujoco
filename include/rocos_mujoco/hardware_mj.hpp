@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -20,6 +21,8 @@
 struct GLFWwindow;
 
 namespace rocos_mujoco {
+
+class SimulationMenu;
 
 /// @brief 仿真侧机器人数据 —— 与 RoboChargeX HardwareInterface::RobotData 对齐
 struct RobotData {
@@ -154,6 +157,7 @@ private:
     mjvOption  opt_;
     mjvScene   scn_;
     mjrContext con_;
+    std::unique_ptr<SimulationMenu> menu_;
 
     // ---- 鼠标状态 ------------------------------------------------
     bool   btn_left_   = false;

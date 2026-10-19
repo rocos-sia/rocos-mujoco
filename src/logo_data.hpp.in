@@ -1,0 +1,9 @@
+// Generated from rocos-mujoco.png by CMake. Do not edit.
+#ifndef ROCOS_MUJOCO_GENERATED_LOGO_DATA_HPP_
+#define ROCOS_MUJOCO_GENERATED_LOGO_DATA_HPP_
+
+namespace rocos_mujoco {
+inline constexpr unsigned char kLogoPng[] = {@ROCOS_LOGO_BYTES@};
+}  // namespace rocos_mujoco
+
+#endif  // ROCOS_MUJOCO_GENERATED_LOGO_DATA_HPP_

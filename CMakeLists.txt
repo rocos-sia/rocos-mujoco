@@ -74,6 +74,7 @@ if(ROCOS_MUJOCO_ENABLE_VISUALIZATION)
     endif()
 
     find_package(OpenGL REQUIRED)
+    find_package(PNG 1.6 REQUIRED)
     message(STATUS "Visualization:      enabled")
 else()
     message(STATUS "Visualization:      disabled (headless)")
@@ -95,7 +96,15 @@ add_library(rocos_mujoco SHARED
     src/mujoco_simulator.cpp
 )
 if(ROCOS_MUJOCO_ENABLE_VISUALIZATION)
-    target_sources(rocos_mujoco PRIVATE src/hardware_mj.cpp)
+    target_sources(rocos_mujoco PRIVATE src/hardware_mj.cpp src/simulation_menu.cpp)
+
+    # Embed the logo so installed binaries do not need a runtime asset path.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS rocos-mujoco.png)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/rocos-mujoco.png" ROCOS_LOGO_HEX HEX)
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," ROCOS_LOGO_BYTES "${ROCOS_LOGO_HEX}")
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    configure_file(src/logo_data.hpp.in generated/logo_data.hpp @ONLY)
+    target_include_directories(rocos_mujoco PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 endif()
 
 target_include_directories(rocos_mujoco
@@ -116,7 +125,7 @@ target_link_libraries(rocos_mujoco
 if(ROCOS_MUJOCO_ENABLE_VISUALIZATION)
     target_compile_definitions(rocos_mujoco
         PUBLIC ROCOS_MUJOCO_ENABLE_VISUALIZATION=1)
-    target_link_libraries(rocos_mujoco PRIVATE OpenGL::GL)
+    target_link_libraries(rocos_mujoco PRIVATE OpenGL::GL PNG::PNG)
     # GLFW: link conditionally based on how it was found
     if(glfw3_FOUND)
         target_link_libraries(rocos_mujoco PRIVATE glfw)
