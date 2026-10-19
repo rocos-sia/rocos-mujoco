@@ -1,0 +1,3 @@
+<mujoco model="charge_arm_scene">
+  <include file="charge_arm.xml"/>
+</mujoco>

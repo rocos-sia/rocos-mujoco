@@ -146,15 +146,3 @@ install(TARGETS rocos_mujoco rocos_mujoco_sim
 install(DIRECTORY include/
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
-
-# ---- Copy config & model files to build directory -------------------------
-file(COPY config/ DESTINATION ${CMAKE_BINARY_DIR}/bin/config)
-file(COPY model/  DESTINATION ${CMAKE_BINARY_DIR}/bin/model)
-add_custom_command(TARGET rocos_mujoco_sim POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/config"
-        "${CMAKE_BINARY_DIR}/bin/config"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/model"
-        "${CMAKE_BINARY_DIR}/bin/model"
-)

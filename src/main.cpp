@@ -27,25 +27,23 @@ static T readOption(const YAML::Node &settings, const char *key, T fallback) {
 }
 
 static void printUsage(const char *prog) {
-    std::cout << "用法: " << prog << " [--settings <启动配置.yaml>]\n"
-              << "  默认读取 config/simulator.yaml，不存在时读取可执行文件旁的同名文件。\n"
+    std::cout << "用法: " << prog << " [--config <启动配置.yaml>]\n"
+              << "  默认读取工作目录的 config/config.yaml。\n"
               << "  模型、硬件配置、主站 ID、周期、时长和可视化均在 YAML 中设置。\n"
               << "  YAML 内的相对路径以配置文件所在目录为基准。\n"
               << "  --help, -h  显示帮助\n";
 }
 
 int main(int argc, char *argv[]) {
-    fs::path settings_path = "config/simulator.yaml";
-    bool explicit_settings = false;
+    fs::path settings_path = "config/config.yaml";
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
         }
-        if (arg == "--settings" && i + 1 < argc) {
+        if (arg == "--config" && i + 1 < argc) {
             settings_path = argv[++i];
-            explicit_settings = true;
         } else {
             std::cerr << "未知参数或缺少参数值: " << arg << std::endl;
             printUsage(argv[0]);
@@ -60,10 +58,6 @@ int main(int argc, char *argv[]) {
     double duration;
     bool visualize;
     try {
-        if (!explicit_settings && !fs::exists(settings_path)) {
-            settings_path = fs::read_symlink("/proc/self/exe").parent_path() /
-                            "config/simulator.yaml";
-        }
         const YAML::Node settings = YAML::LoadFile(settings_path.string());
         if (!settings.IsMap()) {
             throw std::runtime_error("启动配置必须是 YAML 映射");
@@ -77,17 +71,23 @@ int main(int argc, char *argv[]) {
             }
         }
         const std::string model = readOption<std::string>(settings, "model", "charge_arm");
-        if (model != "charge_arm" && model != "talon") {
-            throw std::runtime_error("未知模型: " + model + " (可选: charge_arm, talon)");
+        if (model.empty() || fs::path(model).has_parent_path() ||
+            model == "." || model == "..") {
+            throw std::runtime_error("model 必须是 models 下的模型目录名");
         }
         const auto resolve_path = [&](const std::string &name) {
             if (name.empty()) throw std::runtime_error("模型/硬件配置路径不能为空");
             return (settings_path.parent_path() / name).lexically_normal().string();
         };
-        urdf_path = resolve_path(readOption<std::string>(settings, "urdf",
-            model == "talon" ? "../model/scene.xml" : "../model/charge_arm.xml"));
-        config_path = resolve_path(readOption<std::string>(settings, "hardware_config",
-            model == "talon" ? "hardware_talon_config.yaml" : "charge_arm_config.yaml"));
+        const std::string model_dir = "../models/" + model + "/";
+        if ((!settings["urdf"] || !settings["hardware_config"]) &&
+            !fs::is_directory(resolve_path(model_dir))) {
+            throw std::runtime_error("模型目录不存在: " + resolve_path(model_dir));
+        }
+        urdf_path = resolve_path(readOption<std::string>(
+            settings, "urdf", model_dir + "scene.xml"));
+        config_path = resolve_path(readOption<std::string>(
+            settings, "hardware_config", model_dir + "hardware_config.yaml"));
         ecat_id = readOption<int>(settings, "ecat_id", 0);
         cycle_time = readOption<double>(settings, "cycle_time_us", 1000.0);
         duration = readOption<double>(settings, "duration_sec", -1.0);
