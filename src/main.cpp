@@ -30,6 +30,7 @@ static void printUsage(const char *prog) {
     std::cout << "用法: " << prog << " [--config <启动配置.yaml>]\n"
               << "  默认读取工作目录的 config/config.yaml。\n"
               << "  模型、硬件配置、主站 ID、周期、时长和可视化均在 YAML 中设置。\n"
+              << "  model 直接指定 MJCF/URDF 文件路径；硬件配置默认为模型同目录的 hardware_config.yaml。\n"
               << "  YAML 内的相对路径以配置文件所在目录为基准。\n"
               << "  --help, -h  显示帮助\n";
 }
@@ -51,7 +52,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    std::string urdf_path;
+    std::string model_path;
     std::string config_path;
     int ecat_id;
     double cycle_time;
@@ -70,24 +71,25 @@ int main(int argc, char *argv[]) {
                 throw std::runtime_error("未知启动配置项: " + key);
             }
         }
-        const std::string model = readOption<std::string>(settings, "model", "charge_arm");
-        if (model.empty() || fs::path(model).has_parent_path() ||
-            model == "." || model == "..") {
-            throw std::runtime_error("model 必须是 models 下的模型目录名");
+        if (settings["model"] && settings["urdf"]) {
+            throw std::runtime_error("model 与旧字段 urdf 不能同时指定，请使用 model 文件路径");
+        }
+        if (!settings["model"] && !settings["urdf"]) {
+            throw std::runtime_error("必须指定 model 文件路径（MJCF/URDF）");
         }
         const auto resolve_path = [&](const std::string &name) {
             if (name.empty()) throw std::runtime_error("模型/硬件配置路径不能为空");
             return (settings_path.parent_path() / name).lexically_normal().string();
         };
-        const std::string model_dir = "../models/" + model + "/";
-        if ((!settings["urdf"] || !settings["hardware_config"]) &&
-            !fs::is_directory(resolve_path(model_dir))) {
-            throw std::runtime_error("模型目录不存在: " + resolve_path(model_dir));
+        // Keep urdf as a legacy alias when model is absent.
+        model_path = resolve_path(settings[settings["model"] ? "model" : "urdf"]
+                                      .as<std::string>());
+        if (!fs::is_regular_file(model_path)) {
+            throw std::runtime_error("model 必须指向存在的 MJCF/URDF 文件: " + model_path);
         }
-        urdf_path = resolve_path(readOption<std::string>(
-            settings, "urdf", model_dir + "scene.xml"));
-        config_path = resolve_path(readOption<std::string>(
-            settings, "hardware_config", model_dir + "hardware_config.yaml"));
+        config_path = settings["hardware_config"]
+            ? resolve_path(settings["hardware_config"].as<std::string>())
+            : (fs::path(model_path).parent_path() / "hardware_config.yaml").string();
         ecat_id = readOption<int>(settings, "ecat_id", 0);
         cycle_time = readOption<double>(settings, "cycle_time_us", 1000.0);
         duration = readOption<double>(settings, "duration_sec", -1.0);
@@ -112,7 +114,7 @@ int main(int argc, char *argv[]) {
     std::cout << "╔══════════════════════════════════════════════════════════════╗\n";
     std::cout << "║  ROCOS MuJoCo 仿真器 (EtherCAT 主站模拟)                    ║\n";
     std::cout << "╠══════════════════════════════════════════════════════════════╣\n";
-    std::cout << "║  模型:      " << std::setw(49) << std::left << urdf_path   << "║\n";
+    std::cout << "║  模型:      " << std::setw(49) << std::left << model_path  << "║\n";
     std::cout << "║  配置:      " << std::setw(49) << std::left << config_path << "║\n";
     std::cout << "║  ecat_id:   " << std::setw(49) << std::left << ecat_id     << "║\n";
     std::cout << "║  周期:      " << std::setw(46) << std::left
@@ -122,7 +124,7 @@ int main(int argc, char *argv[]) {
     std::cout << "╚══════════════════════════════════════════════════════════════╝\n\n";
 
     // ---- 创建并运行仿真器 ------------------------------------------------
-    rocos_mujoco::MujocoSimulator sim(urdf_path, config_path,
+    rocos_mujoco::MujocoSimulator sim(model_path, config_path,
                                        ecat_id, cycle_time);
     if (visualize) {
         sim.enableVisualization();

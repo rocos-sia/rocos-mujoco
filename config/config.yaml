@@ -1,12 +1,12 @@
 # 启动配置。默认读取工作目录的 config/config.yaml。
 # 指定其他配置：rocos_mujoco_sim --config /path/to/config.yaml
-model: talon                      # models/ 下的目录名，目前有 charge_arm 和 talon
-# 默认加载 ../models/<model>/scene.xml 和 hardware_config.yaml。
-# 新模型按上述目录结构添加，无需修改代码。
+model: ../models/talon/scene.xml   # 直接指定 MJCF 文件，也支持 URDF
+# 支持绝对路径；相对路径以本 YAML 所在目录为基准。
+# 明确指定所需文件，不扫描目录或推断 XML 文件名。
 
-# 可选：覆盖预置模型/硬件文件。相对路径均以本 YAML 所在目录为基准。
-# urdf: ../models/charge_arm/scene.xml  # 同时支持 MJCF 和 URDF
-# hardware_config: ../models/charge_arm/hardware_config.yaml
+# 可选：默认读取 model 文件同目录下的 hardware_config.yaml。
+# 显式指定时，相对路径仍以本 YAML 所在目录为基准。
+hardware_config: ../models/talon/hardware_config.yaml
 
 ecat_id: 0                        # EtherCAT 主站 ID，非负整数
 cycle_time_us: 1000.0             # 控制周期（微秒），至少 1
