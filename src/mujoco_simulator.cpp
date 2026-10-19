@@ -321,7 +321,7 @@ bool MujocoSimulator::initialize() {
 #else
         std::cerr << "\033[1;31m[ERROR]\033[0m Visualization support is not built. "
                   << "Reconfigure with -DROCOS_MUJOCO_ENABLE_VISUALIZATION=ON "
-                  << "or run without --visualize.\n";
+                  << "or set visualize: false in simulator.yaml.\n";
         return false;
 #endif
     } else {

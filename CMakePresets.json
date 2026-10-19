@@ -32,6 +32,38 @@
         "CMAKE_BUILD_TYPE": "Release",
         "ROCOS_MUJOCO_ENABLE_VISUALIZATION": "OFF"
       }
+    },
+    {
+      "name": "linux-release",
+      "displayName": "Linux visualization (Release)",
+      "description": "Build the MuJoCo simulator with GLFW/OpenGL visualization.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/linux-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ROCOS_MUJOCO_ENABLE_VISUALIZATION": "ON"
+      }
+    },
+    {
+      "name": "linux-debug",
+      "displayName": "Linux visualization (Debug)",
+      "description": "Build the MuJoCo simulator with GLFW/OpenGL visualization.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/linux-debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ROCOS_MUJOCO_ENABLE_VISUALIZATION": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -42,6 +74,14 @@
     {
       "name": "wsl-headless",
       "configurePreset": "wsl-headless"
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    },
+    {
+      "name": "linux-debug",
+      "configurePreset": "linux-debug"
     }
   ]
 }

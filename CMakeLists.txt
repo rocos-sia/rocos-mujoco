@@ -5,8 +5,13 @@
 # Build system for the rocos-mujoco MuJoCo simulation environment.
 
 cmake_minimum_required(VERSION 3.16)
-project(rocos_mujoco VERSION 1.0.0
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" ROCOS_MUJOCO_VERSION LIMIT_COUNT 1)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS VERSION)
+# CMake project(VERSION) only accepts the numeric part of a SemVer version.
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" ROCOS_MUJOCO_VERSION_CORE "${ROCOS_MUJOCO_VERSION}")
+project(rocos_mujoco VERSION ${ROCOS_MUJOCO_VERSION_CORE}
         DESCRIPTION "ROCOS MuJoCo Simulation Environment")
+message(STATUS "ROCOS MuJoCo version: ${ROCOS_MUJOCO_VERSION}")
 
 # ---- C++ standard --------------------------------------------------------
 set(CMAKE_CXX_STANDARD 17)

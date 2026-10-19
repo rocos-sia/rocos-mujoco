@@ -1,0 +1,12 @@
+# 启动配置。默认读取工作目录的 config/simulator.yaml；不存在时读取可执行文件旁的同名文件。
+# 指定其他配置：rocos_mujoco_sim --settings /path/to/simulator.yaml
+model: charge_arm                 # 预置模型：charge_arm | talon
+
+# 可选：覆盖预置模型/硬件文件。相对路径均以本 YAML 所在目录为基准。
+# urdf: ../model/charge_arm.xml    # 同时支持 MJCF 和 URDF
+# hardware_config: charge_arm_config.yaml
+
+ecat_id: 0                        # EtherCAT 主站 ID，非负整数
+cycle_time_us: 1000.0             # 控制周期（微秒），至少 1
+duration_sec: -1.0                # 运行时长（秒），-1 为持续运行，0 为仅初始化
+visualize: false                  # true 开启窗口，需要 linux-release 或 linux-debug 构建
