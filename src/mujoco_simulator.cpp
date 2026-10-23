@@ -816,20 +816,6 @@ void MujocoSimulator::stepPhysics() {
 #endif
 
     mj_step(m_, d_);
-
-    if (verbose_) {
-        static int cnt = 0;
-        if (++cnt % 1000 == 0 && m_->nu > 0) {
-            int i = 1;  // 使用第一个执行器（而非硬编码 1）
-            std::cout
-                << "[DEBUG] step=" << cnt
-                << " ctrl=" << d_->ctrl[i]
-                << " q=" << d_->qpos[i]
-                << " act=" << d_->qfrc_actuator[i]
-                << " bias=" << d_->qfrc_bias[i]
-                << std::endl;
-        }
-    }
 }
 
 // ==========================================================================
