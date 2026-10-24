@@ -7,6 +7,16 @@
   },
   "configurePresets": [
     {
+      "name": "release",
+      "inherits": "linux-release",
+      "displayName": "Release (alias for linux-release)"
+    },
+    {
+      "name": "debug",
+      "inherits": "linux-debug",
+      "displayName": "Debug (alias for linux-debug)"
+    },
+    {
       "name": "linux-headless",
       "displayName": "Linux headless server",
       "description": "Build the MuJoCo engine and shared-memory simulator without GLFW/OpenGL visualization support.",
@@ -38,7 +48,7 @@
       "displayName": "Linux visualization (Release)",
       "description": "Build the MuJoCo simulator with GLFW/OpenGL visualization.",
       "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build/linux-release",
+      "binaryDir": "${sourceDir}/build/${presetName}",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -54,7 +64,7 @@
       "displayName": "Linux visualization (Debug)",
       "description": "Build the MuJoCo simulator with GLFW/OpenGL visualization.",
       "generator": "Unix Makefiles",
-      "binaryDir": "${sourceDir}/build/linux-debug",
+      "binaryDir": "${sourceDir}/build/${presetName}",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -67,6 +77,16 @@
     }
   ],
   "buildPresets": [
+    {
+      "name": "release",
+      "inherits": "linux-release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug",
+      "inherits": "linux-debug",
+      "configurePreset": "debug"
+    },
     {
       "name": "linux-headless",
       "configurePreset": "linux-headless"
