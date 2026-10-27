@@ -87,6 +87,13 @@ message(STATUS "Third-party yaml-cpp: system")
 # ---- Threads --------------------------------------------------------------
 find_package(Threads REQUIRED)
 
+# ABI v2 is maintained in a pinned submodule, not a local header copy.
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/rocos-shm/CMakeLists.txt")
+    message(FATAL_ERROR "Initialize rocos-shm: git submodule update --init --recursive")
+endif()
+include(CTest)
+add_subdirectory(third_party/rocos-shm)
+
 # ==========================================================================
 # Build targets
 # ==========================================================================
@@ -95,6 +102,8 @@ find_package(Threads REQUIRED)
 add_library(rocos_mujoco SHARED
     src/mujoco_simulator.cpp
 )
+target_compile_definitions(rocos_mujoco PRIVATE
+    ROCOS_MUJOCO_VERSION_FULL="${ROCOS_MUJOCO_VERSION}")
 if(ROCOS_MUJOCO_ENABLE_VISUALIZATION)
     target_sources(rocos_mujoco PRIVATE src/hardware_mj.cpp src/simulation_menu.cpp)
 
@@ -117,6 +126,7 @@ target_link_libraries(rocos_mujoco
     PUBLIC
         third_party::mujoco
         yaml-cpp
+        rocos::shm
     PRIVATE
         Threads::Threads
         rt
@@ -140,6 +150,15 @@ add_executable(rocos_mujoco_sim
     src/main.cpp
 )
 target_link_libraries(rocos_mujoco_sim PRIVATE rocos_mujoco)
+
+if(BUILD_TESTING)
+    add_executable(mujoco_shm_test tests/mujoco_shm_test.cpp)
+    target_link_libraries(mujoco_shm_test PRIVATE rocos_mujoco Threads::Threads)
+    target_compile_definitions(mujoco_shm_test PRIVATE
+        ROCOS_MUJOCO_VERSION_FULL="${ROCOS_MUJOCO_VERSION}")
+    add_test(NAME mujoco_shm_v2 COMMAND mujoco_shm_test)
+    set_tests_properties(mujoco_shm_v2 PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+endif()
 
 # ==========================================================================
 # Install

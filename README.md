@@ -45,6 +45,7 @@ flowchart LR
 | CMake | 基础构建要求 3.16+；下方使用的预设建议采用 3.21+。 |
 | MuJoCo | 3.4.0，需有匹配运行平台的头文件和共享库。 |
 | yaml-cpp | 必需，用于解析启动和硬件配置。 |
+| rocos-shm | 包版本 2.0.0 / ABI v2，Linux x86_64；通过子模块固定提交。 |
 | GLFW / OpenGL / libpng | 可视化构建需要；libpng 版本要求 1.6+。 |
 
 Ubuntu / Debian 环境可安装以下构建依赖：
@@ -56,6 +57,14 @@ sudo apt install -y build-essential cmake pkg-config \
 ```
 
 CMake 优先使用仓库中的 `third_party/mujoco-3.4.0/`；该目录缺少 MuJoCo 共享库时，会尝试 `$HOME/.mujoco/mujoco-3.4.0/`。对应目录需要同时包含 `include/` 和 `lib/`。
+
+首次获取仓库或更新依赖后，初始化共享内存公共库：
+
+```bash
+git submodule update --init --recursive
+```
+
+`third_party/rocos-shm` 固定在 `87c436c49777834964a5f1a38d46b4e0c74d34b2`，构建不会跟随上游 `main`。共享内存定义与连接校验由该库统一维护。
 
 ### 2. 编译可视化版本
 
@@ -182,12 +191,24 @@ visualize: false
 
 1. 先启动仿真器，确认日志中模型、硬件配置和共享内存初始化成功。
 2. 控制端使用与仿真配置一致的 `ecat_id`，连接同一组共享内存对象。
-3. 核对双方的从站 `id`、PDO 变量名称、计数倍率及偏移，并保证共享内存结构一致。
+3. 核对双方的从站 `id`、PDO 变量名称、计数倍率及偏移；控制端必须使用匹配的 `rocos-shm` ABI v2 重新编译。
 4. 由控制端按仿真 CiA 402 状态机完成驱动使能，再发送控制模式及目标值。
 
 支持模式值 `8`（CSP）、`9`（CSV）和 `10`（CST）。模式 `6` 当前按位置控制处理，不执行真实回零搜索流程。
 
-完整的字段、PDO 布局和换算公式见 [硬件配置规范](docs/hardware_config.md)。共享内存定义见 [shared_memory_config.hpp](include/rocos_mujoco/shared_memory_config.hpp)。
+IPC 名称为 `/ecm_v2_{id}`、`/pd_input_v2_{id}`、`/pd_output_v2_{id}` 和 `/sync_v2_{id}_{slot}`。旧版客户端不能连接。升级时停止双方，部署匹配版本，再先启动仿真器、后启动控制端。每个 ID 只允许一个主站和一个可写 App；其他工具使用 `connect(true)` 只读连接。任一方异常退出后需停止另一方并关闭旧映射，再重启双方，不支持热接管。
+
+仿真器发布自身 `VERSION`、Unix 微秒时间戳、单调时钟心跳、实际周期间隔统计及虚拟从站在线/OP 状态。ABI v2 未定义 MuJoCo 后端编号，`backend_type` 保持 0；物理身份、固件、链路、WKC、DC 测量保持无效。总线状态切换不支持（`state_control_supported=0`）。单邮箱仅支持 `RESET_STATS`，由非实时线程接收、仿真周期边界清统计后确认；SDO 和 `RESET_FAULT` 明确返回 `UNSUPPORTED`。仿真暂停时复位可能超时，客户端须继续 `pollCommand()` 消费原结果，不得覆盖邮箱或自动重发。
+
+完整的字段、PDO 布局和换算公式见 [硬件配置规范](docs/hardware_config.md)。[shared_memory_config.hpp](include/rocos_mujoco/shared_memory_config.hpp) 仅保留兼容 include；实际定义见 [rocos-shm ABI v2](third_party/rocos-shm/docs/abi-v2.md)。周期通知不保证整帧 PDO 一致性。
+
+共享内存离线验证（使用独立测试 ID，不连接硬件）：
+
+```bash
+cmake --preset linux-headless -DBUILD_TESTING=ON -DROCOS_SHM_BUILD_TESTS=ON
+cmake --build --preset linux-headless --parallel
+ctest --test-dir build/headless --output-on-failure
+```
 
 ## 模型与配置文档
 
@@ -216,7 +237,7 @@ visualize: false
 rocos-mujoco/
 ├── config/                 # 启动配置
 ├── docs/                   # 配置规范
-├── include/rocos_mujoco/   # 仿真接口与共享内存定义
+├── include/rocos_mujoco/   # 仿真接口与共享内存兼容 include
 ├── models/                 # 模型、场景、网格与硬件描述
 ├── src/                    # 入口、仿真控制、渲染与原生菜单
 ├── third_party/            # MuJoCo 依赖

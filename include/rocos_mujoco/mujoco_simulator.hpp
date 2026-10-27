@@ -9,8 +9,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -129,6 +131,8 @@ private:
     void stepPhysics();
     void writeSensorData();
     void signalClients();
+    void commandLoop();
+    void updateCycleStats();
 
     // ---- Unit conversions ---------------------------------------------
     double  cntToUnit(double cnt, double cnt_per_unit, double ratio,
@@ -143,6 +147,15 @@ private:
 
     // ---- Shared memory ------------------------------------------------
     rocos::SharedMemoryConfig *shm_ = nullptr;
+    std::thread command_thread_;
+    std::atomic<bool> stop_commands_{false};
+    std::atomic<uint64_t> reset_requested_{0};
+    std::atomic<uint64_t> reset_completed_{0};
+    uint64_t last_cycle_ns_ = 0;
+    uint64_t cycle_count_ = 0;
+    double min_cycle_us_ = 0.0;
+    double max_cycle_us_ = 0.0;
+    double avg_cycle_us_ = 0.0;
 
     // ---- Joint mapping ------------------------------------------------
     struct JointEntry {

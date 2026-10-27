@@ -1,0 +1,3 @@
+[submodule "third_party/rocos-shm"]
+	path = third_party/rocos-shm
+	url = https://github.com/rocos-sia/rocos-shm.git
