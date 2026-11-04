@@ -50,6 +50,8 @@ class SimulationMenu {
   int label_width_ = 170;
   Drag drag_ = Drag::kNone;
   std::vector<JointValues> values_;
+  int show_visual_mesh_ = 1;
+  int show_collision_mesh_ = 0;
   int show_joint_ = 0;
   int show_axis_ = 0;
   mjtNum transparency_ = 0;

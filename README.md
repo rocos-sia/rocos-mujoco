@@ -166,6 +166,8 @@ visualize: false
 | 拖动侧栏内部竖向分隔线 | 调整名称列与数据列宽度。 |
 | 点击栏目标题 | 展开/折叠栏目。 |
 | 在侧栏上滚动 | 查看超出窗口高度的菜单内容。 |
+| `Display → Visual mesh` | 显示/隐藏 group 2 的视觉几何体，默认开启。 |
+| `Display → Collision mesh` | 显示/隐藏 group 3 的碰撞几何体，默认关闭；不影响碰撞计算。 |
 | `Display → Joint` | 显示关节轴。 |
 | `Display → Axis` | 显示模型 body 坐标系。 |
 | `Display → Transparency` | 调整模型透明度；`0` 不额外透明，`1` 完全透明。 |

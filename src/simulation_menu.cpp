@@ -58,6 +58,8 @@ void SimulationMenu::Build(const mjModel* model) {
   ui_->nsect = 0;
   const mjuiDef display[] = {
       {mjITEM_SECTION, "Display", section_state[0]},
+      {mjITEM_CHECKINT, "Visual mesh", 1, &show_visual_mesh_},
+      {mjITEM_CHECKINT, "Collision mesh", 1, &show_collision_mesh_},
       {mjITEM_CHECKINT, "Joint", 1, &show_joint_},
       {mjITEM_CHECKINT, "Axis", 1, &show_axis_},
       {mjITEM_SLIDERNUM, "Transparency", 1, &transparency_, "0 1"},
@@ -128,6 +130,9 @@ void SimulationMenu::Resize() {
 void SimulationMenu::Update(const mjModel* model, const mjData* data,
                             mjvOption* option) {
   if (page_ != built_page_) Build(model);
+  // Match the visual/collision geom groups used by the MJCF models.
+  option->geomgroup[2] = show_visual_mesh_;
+  option->geomgroup[3] = show_collision_mesh_;
   option->flags[mjVIS_JOINT] = show_joint_;
   option->frame = show_axis_ ? mjFRAME_BODY : mjFRAME_NONE;
   for (int joint = 0; joint < model->njnt; ++joint) {
