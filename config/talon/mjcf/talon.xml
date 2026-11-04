@@ -1,5 +1,5 @@
 <mujoco model="talon">
-    <compiler angle="radian" meshdir="meshes" autolimits="true" />
+    <compiler angle="radian" meshdir="../meshes" autolimits="true" />
 
     <option integrator="implicitfast" />
 

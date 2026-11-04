@@ -3,11 +3,14 @@
      Commit Version: 1.6.0-1-g15f4949  Build Version: 1.6.7594.29634
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot name="talon">
+    <mujoco>
+        <compiler strippath="false"/>
+    </mujoco>
     <link name="base_link">
         <visual>
             <origin xyz="0 0 0" rpy="0 0 3.1415926535897932384626"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/base_link.STL"/>
+                <mesh filename="meshes/base_link.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -16,7 +19,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 3.1415926535897932384626"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/base_link.STL"/>
+                <mesh filename="meshes/base_link.STL"/>
             </geometry>
         </collision>
     </link>
@@ -38,7 +41,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_1.STL"/>
+                <mesh filename="meshes/link_1.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -47,7 +50,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 3.1415926535897932384626"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_1.STL"/>
+                <mesh filename="meshes/link_1.STL"/>
             </geometry>
         </collision>
     </link>
@@ -97,7 +100,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_2.STL"/>
+                <mesh filename="meshes/link_2.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -106,7 +109,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 3.1415926535897932384626"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_2.STL"/>
+                <mesh filename="meshes/link_2.STL"/>
             </geometry>
         </collision>
     </link>
@@ -154,7 +157,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_3.STL"/>
+                <mesh filename="meshes/link_3.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -163,7 +166,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 3.1415926535897932384626"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_3.STL"/>
+                <mesh filename="meshes/link_3.STL"/>
             </geometry>
         </collision>
     </link>
@@ -211,7 +214,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_4.STL"/>
+                <mesh filename="meshes/link_4.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -221,7 +224,7 @@
             <origin xyz="0 0 0"
                     rpy="0 0 3.1415926535897932384626"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_4.STL"/>
+                <mesh filename="meshes/link_4.STL"/>
             </geometry>
         </collision>
     </link>
@@ -269,7 +272,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_5.STL"/>
+                <mesh filename="meshes/link_5.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -278,7 +281,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 3.1415926535897932384626"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_5.STL"/>
+                <mesh filename="meshes/link_5.STL"/>
             </geometry>
         </collision>
     </link>
@@ -326,7 +329,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_6.STL"/>
+                <mesh filename="meshes/link_6.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -335,7 +338,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 3.1415926535897932384626"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_6.STL"/>
+                <mesh filename="meshes/link_6.STL"/>
             </geometry>
         </collision>
     </link>
@@ -383,7 +386,7 @@
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_7.STL"/>
+                <mesh filename="meshes/link_7.STL"/>
             </geometry>
             <material name="">
                 <color rgba="1 1 1 1"/>
@@ -392,7 +395,7 @@
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0"/>
             <geometry>
-                <mesh filename="package://self_robot_description/meshes/link_7.STL"/>
+                <mesh filename="meshes/link_7.STL"/>
             </geometry>
         </collision>
     </link>

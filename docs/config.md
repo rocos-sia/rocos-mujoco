@@ -1,8 +1,8 @@
-# config.yaml 配置规范
+# mujoco.yaml 启动配置规范
 
-`config.yaml` 定义仿真程序的启动参数：模型文件、硬件配置、共享内存主站标识、控制周期、运行时长和可视化开关。
+`mujoco.yaml` 定义仿真程序的启动参数：模型文件、硬件配置、共享内存主站标识、控制周期、运行时长和可视化开关。
 
-本文对应当前仓库的 [启动参数解析代码](../src/main.cpp)。仓库示例见 [config/config.yaml](../config/config.yaml)；硬件配置内容见 [hardware_config.yaml 配置规范](hardware_config.md)。
+本文对应当前仓库的 [启动参数解析代码](../src/main.cpp)。仓库示例见 [mujoco.yaml](../config/talon/mjcf/mujoco.yaml)；硬件配置内容见 [hardware.yaml 配置规范](hardware_config.md)。
 
 ## 1. 文件格式与启动方式
 
@@ -14,7 +14,7 @@
 ./build/bin/rocos_mujoco_sim
 ```
 
-默认配置路径是**进程工作目录**下的 `config/config.yaml`，不是可执行文件所在目录。也可以显式指定：
+默认配置路径是**进程工作目录**下的 `config/talon/mjcf/mujoco.yaml`，不是可执行文件所在目录。也可以显式指定：
 
 ```bash
 /path/to/rocos_mujoco_sim --config /path/to/config.yaml
@@ -42,14 +42,14 @@
 
 `model` 和显式填写的 `hardware_config` 均支持绝对路径。它们的相对路径统一以**启动 YAML 文件所在目录**为基准。
 
-例如，启动配置位于 `/project/config/config.yaml`：
+例如，启动配置位于 `/project/config/talon/mjcf/mujoco.yaml`：
 
 | 配置内容 | 实际路径 |
 | --- | --- |
-| `model: ../models/talon/scene.xml` | `/project/models/talon/scene.xml` |
-| `model: ../models/talon/talon.xml` | `/project/models/talon/talon.xml` |
+| `model: scene.xml` | `/project/config/talon/mjcf/scene.xml` |
+| `model: talon.xml` | `/project/config/talon/mjcf/talon.xml` |
 | `model: /data/robots/test.xml` | `/data/robots/test.xml` |
-| `hardware_config: custom_hw.yaml` | `/project/config/custom_hw.yaml` |
+| `hardware_config: ../hardware.yaml` | `/project/config/talon/hardware.yaml` |
 
 程序只加载明确指定的模型文件，不扫描同目录下的 XML，也不自动补上 `scene.xml`。如果一个目录同时有机器人本体、场景和测试模型，应填写实际需要加载的文件。
 
@@ -59,11 +59,11 @@
 
 ## 4. 配置示例
 
-以下示例保存于仓库的 `config/` 目录：
+以下 Talon 示例保存于仓库的 `config/talon/mjcf/mujoco.yaml`：
 
 ```yaml
-model: ../models/talon/scene.xml
-hardware_config: ../models/talon/hardware_config.yaml
+model: scene.xml
+hardware_config: ../hardware.yaml
 
 ecat_id: 0
 cycle_time_us: 1000.0
@@ -71,10 +71,12 @@ duration_sec: -1.0
 visualize: true
 ```
 
-如果硬件配置与模型同目录，可省略 `hardware_config`。下面的最小配置使用其他字段的默认值，在无头模式下持续运行：
+该示例从 Talon 目录读取 `hardware.yaml`，与 `robot.urdf`、`meshes/` 一起管理；`scene.xml` 和 `talon.xml` 放在 `mjcf/` 下。复制或移动整个 Talon 目录后，内部相对路径仍然有效。解析器不限制硬件配置文件名，`hardware.yaml` 和旧文件名 `hardware_config.yaml` 使用相同的 `hardware` 数组格式。
+
+Talon 必须保留 `hardware_config: ../hardware.yaml`。旧模型的硬件配置仍命名为 `hardware_config.yaml` 且与模型同目录时，可省略该字段。例如某个外部模型目录中同时有 `scene.xml` 和 `hardware_config.yaml`，将下面的配置保存到该目录即可使用默认值在无头模式下持续运行：
 
 ```yaml
-model: ../models/charge_arm/scene.xml
+model: scene.xml
 ```
 
 ## 5. 周期与模型时间步长
@@ -104,7 +106,7 @@ model: talon
 
 ```yaml
 # 新写法，明确选择模型文件
-model: ../models/talon/scene.xml
+model: scene.xml
 ```
 
 模型没有成功加载时，先检查路径基准和模型内部资源；提示硬件配置加载失败时，再按 [硬件配置规范](hardware_config.md) 检查 YAML 内容与关节映射。

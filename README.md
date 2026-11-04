@@ -92,11 +92,11 @@ cmake --build build --parallel
 
 ### 3. 检查启动配置
 
-编辑 [config/config.yaml](config/config.yaml)：
+编辑 [mujoco.yaml](config/talon/mjcf/mujoco.yaml)：
 
 ```yaml
-model: ../models/talon/scene.xml
-hardware_config: ../models/talon/hardware_config.yaml
+model: scene.xml
+hardware_config: ../hardware.yaml
 
 ecat_id: 0
 cycle_time_us: 1000.0
@@ -106,7 +106,8 @@ visualize: true
 
 - `model` 直接指定要加载的文件，不填写模型目录名。
 - 模型和显式硬件配置的相对路径，以这个 YAML 文件所在目录为基准。
-- `hardware_config` 可省略，默认读取模型文件同目录的 `hardware_config.yaml`。
+- Talon 的启动配置位于 `mjcf/`，通过 `../hardware.yaml` 引用 Talon 目录统一管理的硬件配置；整个 Talon 目录可以一起移动。
+- Talon 需保留 `hardware_config: ../hardware.yaml`；省略时仍按旧规则读取模型同目录的 `hardware_config.yaml`。
 - `duration_sec: -1` 持续运行；正值限定运行时长；`0` 仅初始化，但仍会创建共享内存等运行资源。
 
 `cycle_time_us` 不会覆盖 MJCF 的 `option.timestep`。需要控制时间与物理时间一致时，应自行对齐两者，例如 1000 μs 对应 0.001 s。详细规则见 [启动配置规范](docs/config.md)。
@@ -114,12 +115,12 @@ visualize: true
 ### 4. 启动仿真
 
 ```bash
-./build/linux-release/bin/rocos_mujoco_sim --config config/config.yaml
+./build/linux-release/bin/rocos_mujoco_sim --config config/talon/mjcf/mujoco.yaml
 ```
 
 程序会加载模型和硬件描述、创建共享内存，并打开仿真窗口。未连接控制端或驱动未使能时，机器人保持位置；可以先查看模型、使用侧栏和调整视角。
 
-省略 `--config` 时，程序读取**当前工作目录**下的 `config/config.yaml`。从其他目录启动时，建议显式传入配置文件的绝对路径。
+省略 `--config` 时，程序读取**当前工作目录**下的 `config/talon/mjcf/mujoco.yaml`。从其他目录启动时，建议显式传入配置文件的绝对路径。
 
 ## 无头运行
 
@@ -130,10 +131,11 @@ cmake --preset linux-headless
 cmake --build --preset linux-headless --parallel
 ```
 
-将以下配置保存为 `config/headless.yaml`，也可在现有配置中将 `visualize` 改为 `false`：
+将以下配置保存为 `config/talon/mjcf/headless.yaml`，也可在现有配置中将 `visualize` 改为 `false`：
 
 ```yaml
-model: ../models/talon/scene.xml
+model: scene.xml
+hardware_config: ../hardware.yaml
 ecat_id: 0
 cycle_time_us: 1000.0
 duration_sec: 5.0
@@ -141,7 +143,7 @@ visualize: false
 ```
 
 ```bash
-./build/headless/bin/rocos_mujoco_sim --config config/headless.yaml
+./build/headless/bin/rocos_mujoco_sim --config config/talon/mjcf/headless.yaml
 ```
 
 无头程序不能使用 `visualize: true`。仓库还提供以下构建预设：
@@ -214,15 +216,14 @@ ctest --test-dir build/headless --output-on-failure
 
 | 模型 | 说明 | 场景入口 | 硬件描述 |
 | --- | --- | --- | --- |
-| Talon | 7 轴旋转关节机械臂 | [scene.xml](models/talon/scene.xml) | [hardware_config.yaml](models/talon/hardware_config.yaml) |
-| charge_arm | 1 个滑动关节与 6 个旋转关节 | [scene.xml](models/charge_arm/scene.xml) | [hardware_config.yaml](models/charge_arm/hardware_config.yaml) |
+| Talon | 7 轴旋转关节机械臂 | [scene.xml](config/talon/mjcf/scene.xml) | [hardware.yaml](config/talon/hardware.yaml) |
 
 切换模型时，在启动 YAML 中填写对应文件路径，并选择与该模型匹配的硬件配置。自定义模型也可以放在仓库外，通过绝对路径加载。
 
 | 文档 | 内容 |
 | --- | --- |
-| [config.yaml 配置规范](docs/config.md) | 启动字段、默认值、路径规则、周期与校验限制。 |
-| [hardware_config.yaml 配置规范](docs/hardware_config.md) | 硬件类型、关节映射、PDO 名称、单位换算和排查说明。 |
+| [mujoco.yaml 配置规范](docs/config.md) | 启动字段、默认值、路径规则、周期与校验限制。 |
+| [hardware.yaml 配置规范](docs/hardware_config.md) | 硬件类型、关节映射、PDO 名称、单位换算和排查说明。 |
 
 ## 当前实现范围
 
@@ -235,10 +236,14 @@ ctest --test-dir build/headless --output-on-failure
 
 ```text
 rocos-mujoco/
-├── config/                 # 启动配置
 ├── docs/                   # 配置规范
 ├── include/rocos_mujoco/   # 仿真接口与共享内存兼容 include
-├── models/                 # 模型、场景、网格与硬件描述
+├── config/                 # 按机器人管理模型、场景、网格与硬件描述
+│   └── talon/
+│       ├── hardware.yaml
+│       ├── robot.urdf
+│       ├── meshes/
+│       └── mjcf/            # mujoco.yaml、scene.xml、talon.xml
 ├── src/                    # 入口、仿真控制、渲染与原生菜单
 ├── third_party/            # MuJoCo 依赖
 ├── CMakeLists.txt

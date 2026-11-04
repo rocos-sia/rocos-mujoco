@@ -1,8 +1,20 @@
-# hardware_config.yaml 配置规范
+# hardware.yaml 硬件配置规范
 
-`hardware_config.yaml` 描述仿真对外暴露的驱动器、六维力传感器和 IO 模块，并定义共享内存 PDO 的变量名称及关节计数换算参数。
+`hardware.yaml`（旧文件名 `hardware_config.yaml`）描述仿真对外暴露的驱动器、六维力传感器和 IO 模块，并定义共享内存 PDO 的变量名称及关节计数换算参数。
 
-本文依据 [硬件配置解析、PDO 布局及控制实现](../src/mujoco_simulator.cpp) 和 [共享内存结构](../include/rocos_mujoco/shared_memory_config.hpp)。完整模型示例见 [Talon 配置](../models/talon/hardware_config.yaml) 与 [charge_arm 配置](../models/charge_arm/hardware_config.yaml)。入口文件的定位规则见 [config.yaml 配置规范](config.md)。
+本文依据 [硬件配置解析、PDO 布局及控制实现](../src/mujoco_simulator.cpp) 和 [共享内存结构](../include/rocos_mujoco/shared_memory_config.hpp)。完整模型示例见 [Talon 配置](../config/talon/hardware.yaml)。入口文件的定位规则见 [mujoco.yaml 启动配置规范](config.md)。
+
+## 与 rocos-app 共用配置
+
+rocos-app 的 `config/robots/talon/hardware.yaml` 与本仓库的 `config/talon/hardware.yaml` 在本次核对时只有文件头的模型来源注释不同：7 个驱动的 ID、关节名称、`torque_source`、限位、换算参数和 PDO 名称全部一致。文件名和存放目录不影响解析，无需转换格式。
+
+[Talon 启动配置](../config/talon/mjcf/mujoco.yaml) 通过 `hardware_config: ../hardware.yaml` 引用 Talon 目录的硬件配置，MuJoCo 场景由同目录的 `scene.xml` 加载。rocos-app 的机器人配置也可引用同一份 `hardware.yaml`；两端共用一个 Talon 目录时应确保最终指向同一文件。
+
+`torque_source` **需要保留**：rocos-app 的 `Hardware::GetJointLoadTorque()` 根据它选择关节负载力矩反馈通道，`load_torque` 使用 `load_torque_value`（int16，按 `torque_per_unit` 换算），`secondary_position` 使用 `secondary_position_value`（int32，按位置计数公式换算）。Talon 的 `hardware.yaml` 已为全部 7 轴配置 `load_torque`，无需重复添加或修改。
+
+MuJoCo 当前同时发布驱动力矩和负载力矩，二者数值相同，因此 Talon 的 `load_torque` 配置可直接共用。仿真器不读取 `torque_source`，且辅助位置反馈仍是位置计数；若将共用配置改为 `secondary_position`，rocos-app 会把位置解码成负载力矩，当前仿真不支持这种力矩通道复用。
+
+两端对省略 PDO 字段的处理有所不同：rocos-app 只绑定配置了非空名称的字段；仿真器在 `inputs` / `outputs` 段存在时会为省略的已知字段补默认名称（见第 3 节）。这些额外 PDO 不妨碍 Talon 按名称绑定已配置字段。
 
 ## 1. 顶层结构与硬件类型
 

@@ -28,7 +28,7 @@ static T readOption(const YAML::Node &settings, const char *key, T fallback) {
 
 static void printUsage(const char *prog) {
     std::cout << "用法: " << prog << " [--config <启动配置.yaml>]\n"
-              << "  默认读取工作目录的 config/config.yaml。\n"
+              << "  默认读取工作目录的 config/talon/mjcf/mujoco.yaml。\n"
               << "  模型、硬件配置、主站 ID、周期、时长和可视化均在 YAML 中设置。\n"
               << "  model 直接指定 MJCF/URDF 文件路径；硬件配置默认为模型同目录的 hardware_config.yaml。\n"
               << "  YAML 内的相对路径以配置文件所在目录为基准。\n"
@@ -36,7 +36,7 @@ static void printUsage(const char *prog) {
 }
 
 int main(int argc, char *argv[]) {
-    fs::path settings_path = "config/config.yaml";
+    fs::path settings_path = "config/talon/mjcf/mujoco.yaml";
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
