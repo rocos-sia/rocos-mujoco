@@ -116,6 +116,7 @@ public:
     HardwareMJ* getVisualizer() const { return visualizer_; }
 
 private:
+    friend struct SimulatorTestAccess;
     // ---- Initialization helpers ---------------------------------------
     bool loadModel(const std::string &urdf_path);
     bool loadHardwareConfig(const std::string &yaml_path);
@@ -138,7 +139,7 @@ private:
     double  cntToUnit(double cnt, double cnt_per_unit, double ratio,
                        int32_t offset_pos_cnt = 0) const;
     int32_t unitToCnt(double unit, double cnt_per_unit, double ratio,
-                      int32_t offset_pos_cnt = 0) const;
+                      int32_t offset_pos_cnt = 0, bool nearest = false) const;
     double  torqueToUnit(int16_t raw, double torque_per_unit) const;
 
     // ---- MuJoCo -------------------------------------------------------

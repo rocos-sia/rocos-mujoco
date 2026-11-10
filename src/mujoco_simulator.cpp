@@ -882,7 +882,7 @@ void MujocoSimulator::writeSensorData() {
         // qfrc_applied 施力（ctrl 被中和），CSV/CST 同理。求和覆盖所有模式。
         double tau  = (dof >= 0) ? (d_->qfrc_actuator[dof] + d_->qfrc_applied[dof]) : 0.0;
 
-        int32_t pc = unitToCnt(q,    j.cnt_per_unit, j.ratio, j.offset_pos_cnt);
+        int32_t pc = unitToCnt(q,    j.cnt_per_unit, j.ratio, j.offset_pos_cnt, true);
         int32_t vc = unitToCnt(qdot, j.cnt_per_unit, j.ratio, j.offset_pos_cnt);
         int16_t tc = static_cast<int16_t>(tau * j.torque_per_unit);
 
@@ -995,8 +995,13 @@ double MujocoSimulator::cntToUnit(double cnt, double cnt_per_unit,
 }
 
 int32_t MujocoSimulator::unitToCnt(double unit, double cnt_per_unit,
-                                    double ratio, int32_t offset_pos_cnt) const {
-    return static_cast<int32_t>(unit * cnt_per_unit * ratio) + offset_pos_cnt;
+                                    double ratio, int32_t offset_pos_cnt, bool nearest) const {
+    const double raw = unit * cnt_per_unit * ratio;
+    const double count = (nearest ? std::round(raw) : std::trunc(raw)) + offset_pos_cnt;
+    if (!std::isfinite(count) || count < std::numeric_limits<int32_t>::min() ||
+        count > std::numeric_limits<int32_t>::max())
+        throw std::out_of_range("Sensor value exceeds encoder count range");
+    return static_cast<int32_t>(count);
 }
 
 double MujocoSimulator::torqueToUnit(int16_t raw,

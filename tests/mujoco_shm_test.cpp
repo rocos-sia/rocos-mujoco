@@ -7,6 +7,8 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -15,6 +17,15 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+
+namespace rocos_mujoco {
+struct SimulatorTestAccess {
+    static int32_t position(const MujocoSimulator& sim, double q, double ratio,
+                            int32_t offset) {
+        return sim.unitToCnt(q, 156455.678, ratio, offset, true);
+    }
+};
+}
 
 namespace {
 
@@ -226,6 +237,21 @@ void TestCapacityAndEmptyPdos(Fixture& fixture, int id) {
 
 int main() {
     try {
+        rocos_mujoco::MujocoSimulator conversion("", "", 19000000 + getpid());
+        for (double ratio : {-2.0, 0.5, 1.0}) {
+            for (int count : {-122868, -1, 0, 1, 122868}) {
+                const double q = count / (156455.678 * ratio);
+                for (double direction : {-INFINITY, INFINITY}) {
+                    Check(rocos_mujoco::SimulatorTestAccess::position(
+                              conversion, std::nextafter(q, direction), ratio, 123) == count + 123,
+                          "position feedback preserves nearest encoder count");
+                }
+            }
+        }
+        bool rejected = false;
+        try { rocos_mujoco::SimulatorTestAccess::position(conversion, INFINITY, 1, 0); }
+        catch (const std::out_of_range&) { rejected = true; }
+        Check(rejected, "nonfinite encoder feedback rejected");
         Fixture fixture;
         const int id = 20000000 + getpid();
         TestInterop(fixture, id);
