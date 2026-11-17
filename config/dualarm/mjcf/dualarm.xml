@@ -1,0 +1,143 @@
+<mujoco model="dualarm">
+  <!--URDF geometry and full inertia preserved. Limits follow Talon hardware.yaml; SI units.-->
+  <compiler angle="radian" meshdir="../meshes" autolimits="true" />
+  <option timestep="0.001" integrator="implicitfast" />
+  <default>
+    <joint damping="0.5" armature="0.01" />
+    <default class="visual">
+      <geom type="mesh" group="2" contype="0" conaffinity="0" />
+    </default>
+    <default class="collision">
+      <geom type="mesh" group="3" rgba="0.9 0.5 0.2 0.25" />
+    </default>
+  </default>
+  <asset>
+    <mesh name="base_link" file="base_link.STL" />
+    <mesh name="Left_Link1" file="Left_Link1.STL" />
+    <mesh name="Left_Link2" file="Left_Link2.STL" />
+    <mesh name="Left_Link3" file="Left_Link3.STL" />
+    <mesh name="Left_Link4" file="Left_Link4.STL" />
+    <mesh name="Left_Link5" file="Left_Link5.STL" />
+    <mesh name="Left_Link6" file="Left_Link6.STL" />
+    <mesh name="Left_Link7" file="Left_Link7.STL" />
+    <mesh name="Right_Link1" file="Right_Link1.STL" />
+    <mesh name="Right_Link2" file="Right_Link2.STL" />
+    <mesh name="Right_Link3" file="Right_Link3.STL" />
+    <mesh name="Right_Link4" file="Right_Link4.STL" />
+    <mesh name="Right_Link5" file="Right_Link5.STL" />
+    <mesh name="Right_Link6" file="Right_Link6.STL" />
+    <mesh name="Right_Link7" file="Right_Link7.STL" />
+  </asset>
+  <worldbody>
+    <body name="base_link" pos="0 0 0.5890511">
+      <inertial pos="0.0115781421480229 -0.164999972684203 -0.249284032931506" mass="10.4149471202802" fullinertia="0.126077719710666 0.126889231983544 0.0271091501124813 -1.04875106067345E-06 8.13149512998869E-07 -5.95987193257436E-07" />
+      <geom name="base_link_visual" class="visual" mesh="base_link" rgba="0.82 0.85 0.88 1" pos="0 0 0" quat="1 0 0 0" />
+      <geom name="base_link_collision" class="collision" mesh="base_link" pos="0 0 0" quat="1 0 0 0" />
+      <body name="Left_Link1" pos="0.011578 -0.063 0.091501" quat="0.703366526568 -0.705693594099 0.0724768889655 0.0449352992397">
+        <inertial pos="0.0130648751437856 -0.000823809675494613 0.0882154108705615" mass="2.64615506466597" fullinertia="0.00817474290746845 0.0078576103829338 0.00274456918914084 -4.9769875305494E-06 -0.000751073973324912 1.03702611580138E-05" />
+        <joint name="Left_Joint1" type="hinge" axis="0.99861 -0.035359 0.039057" range="-2.84 2.84" />
+        <geom name="Left_Link1_visual" class="visual" mesh="Left_Link1" rgba="0.3 0.55 0.82 1" pos="0 0 0" quat="1 0 0 0" />
+        <geom name="Left_Link1_collision" class="collision" mesh="Left_Link1" pos="0 0 0" quat="1 0 0 0" />
+        <body name="Left_Link2" pos="-0.01509 0.00035359 0.13011" quat="0.0195442555536 -3.60071343549e-06 0.999808992783 -3.60071343549e-06">
+          <inertial pos="0.00578609050716955 0.000195080028089809 -0.0685454017011983" mass="2.60800437143759" fullinertia="0.00995354117042841 0.0101256359428646 0.00287332541012145 -6.04522448306485E-06 -0.00208795979954183 -7.171937577687E-05" />
+          <joint name="Left_Joint2" type="hinge" axis="-0.99937 -0.035359 0" range="-2.22 2.22" />
+          <geom name="Left_Link2_visual" class="visual" mesh="Left_Link2" rgba="0.3 0.55 0.82 1" pos="0 0 0" quat="1 0 0 0" />
+          <geom name="Left_Link2_collision" class="collision" mesh="Left_Link2" pos="0 0 0" quat="1 0 0 0" />
+          <body name="Left_Link3" pos="-0.010593 -0.00037475 -0.15599" quat="0.0195442555536 -3.60071343549e-06 -0.999808992783 3.60071343549e-06">
+            <inertial pos="-0.0127998590308461 -0.0226867742854573 0.0907274554018663" mass="1.1809319459101" fullinertia="0.00455236310103355 0.00377993578370875 0.00225369615816298 -0.000436723434428525 0.000646602187651453 0.00136680061263175" />
+            <joint name="Left_Joint3" type="hinge" axis="0.039081 0 -0.99924" range="-2.84 2.84" />
+            <geom name="Left_Link3_visual" class="visual" mesh="Left_Link3" rgba="0.3 0.55 0.82 1" pos="0 0 0" quat="1 0 0 0" />
+            <geom name="Left_Link3_collision" class="collision" mesh="Left_Link3" pos="0 0 0" quat="1 0 0 0" />
+            <body name="Left_Link4" pos="0.0067557 -0.060475 0.14377" quat="-0.0122620972298 -0.693041454145 0.0127509149211 -0.720680649093">
+              <inertial pos="0.0491620053988312 -0.0389011645485071 -0.00190984209397196" mass="0.776698777040036" fullinertia="0.001384384048021 0.0020246160189453 0.00250407991835111 0.000783780720054383 0.000480369694440778 -0.000372960812011015" />
+              <joint name="Left_Joint4" type="hinge" axis="0 0 1" range="-2.23 2.23" />
+              <geom name="Left_Link4_visual" class="visual" mesh="Left_Link4" rgba="0.3 0.55 0.82 1" pos="0 0 0" quat="1 0 0 0" />
+              <geom name="Left_Link4_collision" class="collision" mesh="Left_Link4" pos="0 0 0" quat="1 0 0 0" />
+              <body name="Left_Link5" pos="0.1264 -0.06 -0.0151" quat="0.0122692005491 -0.693047090842 0.0127267846983 -0.720675534166">
+                <inertial pos="-0.015899471389293 0.00047258493611374 0.0648960453071412" mass="0.514431640485696" fullinertia="0.00092753314104362 0.000953796443737563 0.000400848748349703 7.4926834106308E-07 0.000138475143018062 -4.14338080780309E-06" />
+                <joint name="Left_Joint5" type="hinge" axis="-0.039081 0 0.99924" range="-2.71 2.71" />
+                <geom name="Left_Link5_visual" class="visual" mesh="Left_Link5" rgba="0.3 0.55 0.82 1" pos="0 0 0" quat="1 0 0 0" />
+                <geom name="Left_Link5_collision" class="collision" mesh="Left_Link5" pos="0 0 0" quat="1 0 0 0" />
+                <body name="Left_Link6" pos="0.010785 -0.00050916 0.092492" quat="-0.0122620972298 -0.693041454145 0.0127509149211 -0.720680649093">
+                  <inertial pos="0.0489114722806189 -0.0108276375808885 -0.0014991040832379" mass="0.454168620867733" fullinertia="0.000377375282070069 0.00106310833728796 0.000975306049808757 0.000122649361854611 0.000260408226469554 -4.63034331463269E-05" />
+                  <joint name="Left_Joint6" type="hinge" axis="0 0 -1" range="-2.11 2.11" />
+                  <geom name="Left_Link6_visual" class="visual" mesh="Left_Link6" rgba="0.3 0.55 0.82 1" pos="0 0 0" quat="1 0 0 0" />
+                  <geom name="Left_Link6_collision" class="collision" mesh="Left_Link6" pos="0 0 0" quat="1 0 0 0" />
+                  <body name="Left_Link7" pos="0.081 0.0094 -0.015" quat="0.499064446093 -0.48104000047 -0.500951432548 -0.518249803495">
+                    <inertial pos="-0.000300308184923971 0.0162560294485025 0.0206837978701518" mass="0.190537666053757" fullinertia="0.00024031586339692 0.000157228095467476 0.000281269455911388 4.81159245725332E-06 -4.09674518850991E-06 4.66209429677079E-05" />
+                    <joint name="Left_Joint7" type="hinge" axis="-0.035332 0 0.99938" range="-2.84 3.14" />
+                    <geom name="Left_Link7_visual" class="visual" mesh="Left_Link7" rgba="0.3 0.55 0.82 1" pos="0 0 0" quat="1 0 0 0" />
+                    <geom name="Left_Link7_collision" class="collision" mesh="Left_Link7" pos="0 0 0" quat="1 0 0 0" />
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="Right_Link1" pos="0.011578 -0.267 0.091501" quat="0.6935185856 0.69352113304 0.137949754712 -0.137950261431">
+        <inertial pos="0.0165214532159615 -0.000239813642650383 0.0876376665081489" mass="2.64616676953452" fullinertia="0.00810772932503254 0.00785753736018334 0.00281153441477445 4.28531752071978E-06 -0.000960611156964986 -2.34113893695444E-05" />
+        <joint name="Right_Joint1" type="hinge" axis="0 0 -1" range="-2.84 2.84" />
+        <geom name="Right_Link1_visual" class="visual" mesh="Right_Link1" rgba="0.85 0.55 0.25 1" pos="0 0 0" quat="1 0 0 0" />
+        <geom name="Right_Link1_collision" class="collision" mesh="Right_Link1" pos="0 0 0" quat="1 0 0 0" />
+        <body name="Right_Link2" pos="-0.01 -1.0268E-05 0.13056" quat="0.707105482511 0 -0.707108079859 0">
+          <inertial pos="0.0685822566396352 7.22580008757912E-07 0.00578865088328227" mass="2.60802664440413" fullinertia="0.00287355307641272 0.0101273486150658 0.00995476277702387 -1.85715491924803E-06 0.00208960043017607 -4.92729091266405E-08" />
+          <joint name="Right_Joint2" type="hinge" axis="0 0 1" range="-2.22 2.22" />
+          <geom name="Right_Link2_visual" class="visual" mesh="Right_Link2" rgba="0.85 0.55 0.25 1" pos="0 0 0" quat="1 0 0 0" />
+          <geom name="Right_Link2_collision" class="collision" mesh="Right_Link2" pos="0 0 0" quat="1 0 0 0" />
+          <body name="Right_Link3" pos="0.15603 1.0268E-05 -0.0106" quat="0.707105482511 0 0.707108079859 0">
+            <inertial pos="-0.00843637756883452 -0.0229995887077534 0.0911584621327549" mass="1.18092876500138" fullinertia="0.00462539576887829 0.00375389482914515 0.00220670625582811 -0.000353063295739382 0.000505618768575648 0.00140157843105859" />
+            <joint name="Right_Joint3" type="hinge" axis="0 0 -1" range="-2.84 2.84" />
+            <geom name="Right_Link3_visual" class="visual" mesh="Right_Link3" rgba="0.85 0.55 0.25 1" pos="0 0 0" quat="1 0 0 0" />
+            <geom name="Right_Link3_collision" class="collision" mesh="Right_Link3" pos="0 0 0" quat="1 0 0 0" />
+            <body name="Right_Link4" pos="0.0145 -0.06 0.1434" quat="0.00056308698303 0.707105258311 -0.000563089051367 0.707107855658">
+              <inertial pos="0.0491620018625096 -0.038901142630353 -0.00190980477611477" mass="0.77669656389258" fullinertia="0.0013843823216911 0.00202461696315155 0.00250407717475406 0.000783781240427268 0.000480368706893704 -0.000372959646452941" />
+              <joint name="Right_Joint4" type="hinge" axis="0 0 1" range="-2.23 2.23" />
+              <geom name="Right_Link4_visual" class="visual" mesh="Right_Link4" rgba="0.85 0.55 0.25 1" pos="0 0 0" quat="1 0 0 0" />
+              <geom name="Right_Link4_collision" class="collision" mesh="Right_Link4" pos="0 0 0" quat="1 0 0 0" />
+              <body name="Right_Link5" pos="0.1264 -0.06 -0.0151" quat="0.000563115136778 0.707140612819 -0.000563060896314 0.707072499511">
+                <inertial pos="-0.0133594403923385 1.21002539404946E-07 0.0654681296167375" mass="0.514432219520791" fullinertia="0.0009375192338613 0.000953812310412444 0.000390839181176558 1.13571205474256E-08 0.000117559904056488 -1.32549216013262E-08" />
+                <joint name="Right_Joint5" type="hinge" axis="0 0 1" range="-2.71 2.71" />
+                <geom name="Right_Link5_visual" class="visual" mesh="Right_Link5" rgba="0.85 0.55 0.25 1" pos="0 0 0" quat="1 0 0 0" />
+                <geom name="Right_Link5_collision" class="collision" mesh="Right_Link5" pos="0 0 0" quat="1 0 0 0" />
+                <body name="Right_Link6" pos="0.0144 0 0.092" quat="1.89468182786e-08 0.707105482511 -1.89468878743e-08 0.707108079859">
+                  <inertial pos="0.0489114733946453 -0.0108276152719367 -0.00149910042920012" mass="0.454168455260558" fullinertia="0.000377375258308447 0.00106310749068169 0.000975305611224434 0.00012264931121645 0.000260408400333536 -4.63033766892964E-05" />
+                  <joint name="Right_Joint6" type="hinge" axis="0 0 -1" range="-2.11 2.11" />
+                  <geom name="Right_Link6_visual" class="visual" mesh="Right_Link6" rgba="0.85 0.55 0.25 1" pos="0 0 0" quat="1 0 0 0" />
+                  <geom name="Right_Link6_collision" class="collision" mesh="Right_Link6" pos="0 0 0" quat="1 0 0 0" />
+                  <body name="Right_Link7" pos="0.081 0.0094 -0.015" quat="0.707105482511 -0.707108079859 0 0">
+                    <inertial pos="0.0162267653750229 -0.00106604983527493 0.020681505025884" mass="0.190537564792888" fullinertia="0.000156850221403529 0.000240455459068551 0.00028150755646602 -3.19863162787039E-06 4.64896303923571E-05 8.23093782290209E-07" />
+                    <joint name="Right_Joint7" type="hinge" axis="0 0 1" range="-2.84 3.14" />
+                    <geom name="Right_Link7_visual" class="visual" mesh="Right_Link7" rgba="0.85 0.55 0.25 1" pos="0 0 0" quat="1 0 0 0" />
+                    <geom name="Right_Link7_collision" class="collision" mesh="Right_Link7" pos="0 0 0" quat="1 0 0 0" />
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <!-- Adjacent shoulder housings overlap at their mounting interfaces. -->
+  <contact>
+    <exclude body1="base_link" body2="Left_Link1"/>
+    <exclude body1="base_link" body2="Right_Link1"/>
+  </contact>
+  <actuator>
+    <position name="Left_Joint1_position" joint="Left_Joint1" kp="2000" kv="100" ctrlrange="-2.84 2.84" forcerange="-30.0 30.0" />
+    <position name="Left_Joint2_position" joint="Left_Joint2" kp="2000" kv="100" ctrlrange="-2.22 2.22" forcerange="-30.0 30.0" />
+    <position name="Left_Joint3_position" joint="Left_Joint3" kp="2000" kv="100" ctrlrange="-2.84 2.84" forcerange="-30.0 30.0" />
+    <position name="Left_Joint4_position" joint="Left_Joint4" kp="2000" kv="100" ctrlrange="-2.23 2.23" forcerange="-30.0 30.0" />
+    <position name="Left_Joint5_position" joint="Left_Joint5" kp="2000" kv="100" ctrlrange="-2.71 2.71" forcerange="-30.0 30.0" />
+    <position name="Left_Joint6_position" joint="Left_Joint6" kp="2000" kv="100" ctrlrange="-2.11 2.11" forcerange="-30.0 30.0" />
+    <position name="Left_Joint7_position" joint="Left_Joint7" kp="2000" kv="100" ctrlrange="-2.84 3.14" forcerange="-30.0 30.0" />
+    <position name="Right_Joint1_position" joint="Right_Joint1" kp="2000" kv="100" ctrlrange="-2.84 2.84" forcerange="-30.0 30.0" />
+    <position name="Right_Joint2_position" joint="Right_Joint2" kp="2000" kv="100" ctrlrange="-2.22 2.22" forcerange="-30.0 30.0" />
+    <position name="Right_Joint3_position" joint="Right_Joint3" kp="2000" kv="100" ctrlrange="-2.84 2.84" forcerange="-30.0 30.0" />
+    <position name="Right_Joint4_position" joint="Right_Joint4" kp="2000" kv="100" ctrlrange="-2.23 2.23" forcerange="-30.0 30.0" />
+    <position name="Right_Joint5_position" joint="Right_Joint5" kp="2000" kv="100" ctrlrange="-2.71 2.71" forcerange="-30.0 30.0" />
+    <position name="Right_Joint6_position" joint="Right_Joint6" kp="2000" kv="100" ctrlrange="-2.11 2.11" forcerange="-30.0 30.0" />
+    <position name="Right_Joint7_position" joint="Right_Joint7" kp="2000" kv="100" ctrlrange="-2.84 3.14" forcerange="-30.0 30.0" />
+  </actuator>
+</mujoco>

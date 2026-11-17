@@ -20,6 +20,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -274,15 +275,40 @@ MujocoSimulator::MujocoSimulator(const std::string &urdf_path,
                                  const std::string &hw_config_path,
                                  int                ecat_id,
                                  double             cycle_time_us)
-    : urdf_path_(urdf_path),
-      hw_config_path_(hw_config_path),
-      cycle_time_us_(cycle_time_us) {
-    shm_ = new rocos::SharedMemoryConfig(ecat_id);
+    : MujocoSimulator(urdf_path, std::vector<MasterConfig>{{ecat_id, hw_config_path}},
+                      cycle_time_us) {}
+
+MujocoSimulator::MasterState::MasterState(const MasterConfig& config)
+    : config(config), shm(std::make_unique<rocos::SharedMemoryConfig>(config.ecat_id)) {}
+
+MujocoSimulator::MasterState::~MasterState() = default;
+
+MujocoSimulator::MujocoSimulator(const std::string& model_path,
+                               const std::vector<MasterConfig>& masters,
+                               double cycle_time_us)
+    : urdf_path_(model_path), cycle_time_us_(cycle_time_us) {
+    if (masters.empty()) throw std::invalid_argument("At least one master is required");
+    std::set<int> ids;
+    for (const auto& config : masters) {
+        if (config.ecat_id < 0 || !ids.insert(config.ecat_id).second) {
+            throw std::invalid_argument("Master IDs must be non-negative and unique");
+        }
+        masters_.push_back(std::make_unique<MasterState>(config));
+    }
+    hw_config_path_ = masters.front().hardware_config;
+}
+
+int MujocoSimulator::getJointCount() const {
+    int count = 0;
+    for (const auto& master : masters_) count += master->joints.size();
+    return count;
 }
 
 MujocoSimulator::~MujocoSimulator() {
     stop_commands_.store(true);
-    if (command_thread_.joinable()) command_thread_.join();
+    for (auto& master : masters_) {
+        if (master->command_thread.joinable()) master->command_thread.join();
+    }
     bool model_owned_by_visualizer = false;
 #ifdef ROCOS_MUJOCO_ENABLE_VISUALIZATION
     if (visualizer_ != nullptr) {
@@ -296,8 +322,7 @@ MujocoSimulator::~MujocoSimulator() {
         if (d_ != nullptr) { mj_deleteData(d_); d_ = nullptr; }
         if (m_ != nullptr) { mj_deleteModel(m_); m_ = nullptr; }
     }
-    delete shm_;
-    shm_ = nullptr;
+    masters_.clear();
 }
 
 // ==========================================================================
@@ -312,6 +337,7 @@ bool MujocoSimulator::initialize() {
     if (visualize_) {
 #ifdef ROCOS_MUJOCO_ENABLE_VISUALIZATION
         visualizer_ = new HardwareMJ(urdf_path_, /*dyn=*/true);
+        visualizer_->setPhysicsEnabled(false);
         if (!visualizer_->init()) {
             std::cerr << "\033[1;31m[ERROR]\033[0m HardwareMJ init failed\n";
             return false;
@@ -336,50 +362,47 @@ bool MujocoSimulator::initialize() {
                   << m_->nq << " DOFs, " << m_->nu << " actuators)\n";
     }
 
-    // 2. Parse hardware_config.yaml (PDO names + transform params)
-    if (!loadHardwareConfig(hw_config_path_)) {
-        std::cerr << "\033[1;31m[ERROR]\033[0m Failed to load hardware config\n";
-        return false;
+    // Validate every mapping before creating or publishing any IPC objects.
+    std::set<std::string> mapped_joints;
+    for (auto& master : masters_) {
+        if (!loadHardwareConfig(*master)) return false;
+        for (const auto& joint : master->joints) {
+            if (!mapped_joints.insert(joint.joint_name).second) {
+                std::cerr << "[ERROR] Joint mapped more than once: " << joint.joint_name << '\n';
+                return false;
+            }
+        }
     }
-    std::cout << "\033[1;32m[INFO]\033[0m Hardware config loaded ("
-              << joints_.size() << " drives, "
-              << ft_sensors_.size() << " ft, "
-              << io_modules_.size() << " io)\n";
-
-    // 3. Create shared memory
-    if (!setupSharedMemory()) {
-        std::cerr << "\033[1;31m[ERROR]\033[0m Failed to setup shared memory\n";
-        return false;
+    for (auto& master : masters_) {
+        if (!setupSharedMemory(*master)) return false;
+        auto& bus = *master->shm->ecatBus;
+        rocos::atomicStore(bus.dt, static_cast<uint32_t>(cycle_time_us_));
+        rocos::atomicStore(bus.current_state, ECAT_STATE_OP);
+        rocos::atomicStore(bus.is_authorized, true);
+        static_assert(sizeof(ROCOS_MUJOCO_VERSION_FULL) <= sizeof(bus.ecm_version),
+                      "Product version exceeds the v2 version field");
+        std::memcpy(bus.ecm_version, ROCOS_MUJOCO_VERSION_FULL,
+                    sizeof(ROCOS_MUJOCO_VERSION_FULL));
+        bus.backend_type = 0;
+        bus.supported_cmds = 1u << rocos::CMD_RESET_STATS;
+        bus.state_control_supported = 0;
+        rocos::atomicStore(bus.connected_slave_num, bus.slave_num);
+        rocos::atomicStore(bus.status_valid, 1u);
     }
-    std::cout << "\033[1;32m[INFO]\033[0m Shared memory created\n";
-
-    // 4. Initial bus state
-    auto &bus = *shm_->ecatBus;
-    rocos::atomicStore(bus.dt, static_cast<uint32_t>(cycle_time_us_));
-    rocos::atomicStore(bus.current_state, ECAT_STATE_OP);
-    rocos::atomicStore(bus.is_authorized, true);
-    static_assert(sizeof(ROCOS_MUJOCO_VERSION_FULL) <= sizeof(bus.ecm_version),
-                  "Product version exceeds the v2 version field");
-    std::memcpy(bus.ecm_version, ROCOS_MUJOCO_VERSION_FULL,
-                sizeof(ROCOS_MUJOCO_VERSION_FULL));
-    // v2 defines no MuJoCo backend enum. Do not impersonate EC-Master/IGH.
-    bus.backend_type = 0;
-    bus.supported_cmds = 1u << rocos::CMD_RESET_STATS;
-    bus.state_control_supported = 0;
-    rocos::atomicStore(bus.connected_slave_num, bus.slave_num);
-    rocos::atomicStore(bus.status_valid, 1u);  // Virtual online count only.
-    // No physical identity, link, WKC or DC measurements in the simulator.
-
-    if (!visualize_) {
-        writeSensorData();
-    }
-
-    command_thread_ = std::thread(&MujocoSimulator::commandLoop, this);
-    if (!shm_->publishReady()) {
-        stop_commands_.store(true);
-        command_thread_.join();
-        std::cerr << "[ERROR] publishReady: " << shm_->lastError() << '\n';
-        return false;
+    // Initialize feedback before clients can connect, including visual mode.
+#ifdef ROCOS_MUJOCO_ENABLE_VISUALIZATION
+    std::unique_lock<std::mutex> lock;
+    if (visualizer_) lock = std::unique_lock<std::mutex>(visualizer_->physicsMutex());
+#endif
+    mj_forward(m_, d_);
+    for (auto& master : masters_) writeSensorData(*master);
+    for (auto& master : masters_) {
+        if (!master->shm->publishReady()) {
+            std::cerr << "[ERROR] publishReady: " << master->shm->lastError() << '\n';
+            return false;
+        }
+        master->command_thread = std::thread(&MujocoSimulator::commandLoop, this,
+                                              std::ref(*master));
     }
 
     std::cout << "\033[1;32m[INFO]\033[0m MujocoSimulator initialized.\n";
@@ -387,12 +410,14 @@ bool MujocoSimulator::initialize() {
 }
 
 void MujocoSimulator::step() {
-    readCommands();
-    applyControl();
+    for (auto& master : masters_) readCommands(*master);
+    for (auto& master : masters_) applyControl(*master);
     stepPhysics();
-    writeSensorData();
-    updateCycleStats();
-    signalClients();
+    for (auto& master : masters_) {
+        writeSensorData(*master);
+        updateCycleStats(*master);
+    }
+    for (auto& master : masters_) (void)master->shm->notifyClients();
     sim_time_ += cycle_time_us_ / 1e6;
 }
 
@@ -414,7 +439,6 @@ void MujocoSimulator::run(double duration_sec) {
 
         auto cycle_dur = std::chrono::microseconds(
             static_cast<long long>(cycle_time_us_));
-        std::vector<double> vis_pos;
 
         while (visualizer_->isRunning() && sim_time_ < end_time) {
             auto t0 = std::chrono::steady_clock::now();
@@ -425,13 +449,6 @@ void MujocoSimulator::run(double duration_sec) {
                 std::lock_guard<std::mutex> lk(visualizer_->physicsMutex());
                 step();
             }
-
-            // 将当前关节位置发送给渲染线程用于显示
-            // qpos 以 m_->nq（广义坐标数）为界；球关节/自由关节等 nq > nv
-            vis_pos.resize(m_->nq);
-            for (int i = 0; i < m_->nq; ++i)
-                vis_pos[i] = d_->qpos[i];
-            visualizer_->writeCommand(vis_pos, {}, {});
 
             auto elapsed = std::chrono::duration_cast<
                 std::chrono::microseconds>(
@@ -494,23 +511,28 @@ bool MujocoSimulator::loadModel(const std::string &urdf_path) {
 // Hardware config loading (reads PDO names + transforms from YAML)
 // ==========================================================================
 
-bool MujocoSimulator::loadHardwareConfig(const std::string &yaml_path) {
+bool MujocoSimulator::loadHardwareConfig(MasterState& master) {
     try {
-        YAML::Node root = YAML::LoadFile(yaml_path);
+        YAML::Node root = YAML::LoadFile(master.config.hardware_config);
         YAML::Node hw_list = root["hardware"];
         if (!hw_list || !hw_list.IsSequence()) {
             std::cerr << "\033[1;31m[ERROR]\033[0m YAML missing 'hardware'\n";
             return false;
         }
 
-        joints_.clear();
-        ft_sensors_.clear();
-        io_modules_.clear();
+        master.joints.clear();
+        master.ft_sensors.clear();
+        master.io_modules.clear();
 
+        std::set<int> slave_ids;
         for (const auto &node : hw_list) {
             if (!node["type"]) continue;
             std::string type = node["type"].as<std::string>();
             int id = yamlGetInt(node, "id", -1);
+            if (id < 0 || !slave_ids.insert(id).second) {
+                std::cerr << "[ERROR] Slave IDs must be non-negative and unique per master\n";
+                return false;
+            }
 
             if (type == "driver") {
                 JointEntry j;
@@ -520,24 +542,71 @@ bool MujocoSimulator::loadHardwareConfig(const std::string &yaml_path) {
                 // Transform params
                 if (node["transform"]) {
                     auto &t = node["transform"];
-                    j.cnt_per_unit    = yamlGetDouble(t, "cnt_per_unit", 1.0);
+                    if (t["cnt_per_unit"]) {
+                        std::cerr << "[ERROR] transform.cnt_per_unit was renamed to pos_per_unit\n";
+                        return false;
+                    }
+                    j.pos_per_unit = yamlGetDouble(t, "pos_per_unit", 1.0);
+                    j.vel_per_unit = yamlGetDouble(t, "vel_per_unit", j.pos_per_unit);
+                    j.load_torque_per_unit = yamlGetDouble(t, "load_torque_per_unit", 1.0);
                     j.torque_per_unit = yamlGetDouble(t, "torque_per_unit", 1.0);
                     j.ratio           = yamlGetDouble(t, "ratio", 1.0);
                     j.offset_pos_cnt  = yamlGetInt(t, "offset_pos_cnt", 0);
                 }
+                j.load_torque_in_secondary_position =
+                    yamlGetStr(node, "torque_source", "load_torque") == "secondary_position";
                 // Build PDO layout from YAML inputs/outputs sections
                 j.pdo = buildPdoLayout("driver", node);
 
-                // Resolve MuJoCo joint indices
-                j.mj_joint_qpos = mj_name2id(m_, mjOBJ_JOINT,
-                                             j.joint_name.c_str());
-                if (j.mj_joint_qpos >= 0)
-                    j.mj_joint_dof = m_->jnt_dofadr[j.mj_joint_qpos];
+                const int joint_id = mj_name2id(m_, mjOBJ_JOINT, j.joint_name.c_str());
+                if (joint_id < 0 || (m_->jnt_type[joint_id] != mjJNT_HINGE &&
+                                     m_->jnt_type[joint_id] != mjJNT_SLIDE)) {
+                    std::cerr << "[ERROR] Expected a hinge/slide joint: " << j.joint_name << '\n';
+                    return false;
+                }
+                j.mj_joint_qpos = m_->jnt_qposadr[joint_id];
+                j.mj_joint_dof = m_->jnt_dofadr[joint_id];
+                for (int actuator = 0; actuator < m_->nu; ++actuator) {
+                    if (m_->actuator_trntype[actuator] == mjTRN_JOINT &&
+                        m_->actuator_trnid[2 * actuator] == joint_id) {
+                        if (j.mj_actuator >= 0) {
+                            std::cerr << "[ERROR] Multiple actuators for " << j.joint_name << '\n';
+                            return false;
+                        }
+                        j.mj_actuator = actuator;
+                    }
+                }
+                if (j.mj_actuator < 0) {
+                    std::cerr << "[ERROR] Missing position actuator for " << j.joint_name << '\n';
+                    return false;
+                }
+                const int actuator = j.mj_actuator;
+                if (m_->actuator_dyntype[actuator] != mjDYN_NONE ||
+                    m_->actuator_gaintype[actuator] != mjGAIN_FIXED ||
+                    m_->actuator_biastype[actuator] != mjBIAS_AFFINE ||
+                    m_->actuator_gear[6 * actuator] != 1.0 ||
+                    m_->actuator_gainprm[mjNGAIN * actuator] <= 0.0 ||
+                    m_->actuator_biasprm[mjNBIAS * actuator + 1] !=
+                        -m_->actuator_gainprm[mjNGAIN * actuator]) {
+                    std::cerr << "[ERROR] Expected a unit-gear position actuator for "
+                              << j.joint_name << '\n';
+                    return false;
+                }
+                if (!std::isfinite(j.pos_per_unit) || j.pos_per_unit == 0.0 ||
+                    !std::isfinite(j.ratio) || j.ratio == 0.0 ||
+                    !std::isfinite(j.vel_per_unit) || j.vel_per_unit == 0.0 ||
+                    !std::isfinite(j.load_torque_per_unit) || j.load_torque_per_unit == 0.0 ||
+                    !std::isfinite(j.torque_per_unit) || j.torque_per_unit == 0.0) {
+                    std::cerr << "[ERROR] Invalid transform for " << j.joint_name << '\n';
+                    return false;
+                }
 
-                joints_.push_back(j);
+                master.joints.push_back(j);
                 std::cout << "  Drive: slave=" << id
                           << " joint=" << j.joint_name
-                          << " mj_id=" << j.mj_joint_qpos
+                          << " ecat_id=" << master.config.ecat_id
+                          << " qpos=" << j.mj_joint_qpos
+                          << " actuator=" << j.mj_actuator
                           << " pdo_in=" << j.pdo.input_size << "B"
                           << " pdo_out=" << j.pdo.output_size << "B\n";
 
@@ -545,7 +614,7 @@ bool MujocoSimulator::loadHardwareConfig(const std::string &yaml_path) {
                 FTEntry ft;
                 ft.slave_id = id;
                 ft.pdo = buildPdoLayout("ft_sensor", node);
-                ft_sensors_.push_back(ft);
+                master.ft_sensors.push_back(ft);
                 std::cout << "  FT: slave=" << id
                           << " pdo_in=" << ft.pdo.input_size << "B\n";
 
@@ -557,7 +626,7 @@ bool MujocoSimulator::loadHardwareConfig(const std::string &yaml_path) {
                 io.ai_channels = yamlGetInt(node, "analog_in_channels", 0);
                 io.ao_channels = yamlGetInt(node, "analog_out_channels", 0);
                 io.pdo = buildPdoLayout("io", node);
-                io_modules_.push_back(io);
+                master.io_modules.push_back(io);
                 std::cout << "  IO: slave=" << id
                           << " di=" << io.di_channels
                           << " do=" << io.do_channels
@@ -576,15 +645,15 @@ bool MujocoSimulator::loadHardwareConfig(const std::string &yaml_path) {
 // Shared memory setup (follows rocos-ecm pattern exactly)
 // ==========================================================================
 
-bool MujocoSimulator::setupSharedMemory() {
-    if (joints_.size() + ft_sensors_.size() + io_modules_.size() >
+bool MujocoSimulator::setupSharedMemory(MasterState& master) {
+    if (master.joints.size() + master.ft_sensors.size() + master.io_modules.size() >
         MAX_SLAVE_NUM) {
         std::cerr << "[ERROR] Shared memory v2 permits at most "
                   << MAX_SLAVE_NUM << " slaves\n";
         return false;
     }
-    if (!shm_->createSharedMemory()) {
-        std::cerr << "[ERROR] createSharedMemory: " << shm_->lastError() << '\n';
+    if (!master.shm->createSharedMemory()) {
+        std::cerr << "[ERROR] createSharedMemory: " << master.shm->lastError() << '\n';
         return false;
     }
 
@@ -592,17 +661,17 @@ bool MujocoSimulator::setupSharedMemory() {
     int total_in  = 0;
     int total_out = 0;
 
-    for (auto &j : joints_) {
+    for (auto &j : master.joints) {
         j.pd_input_base  = total_in;
         j.pd_output_base = total_out;
         total_in  += j.pdo.input_size;
         total_out += j.pdo.output_size;
     }
-    for (auto &ft : ft_sensors_) {
+    for (auto &ft : master.ft_sensors) {
         ft.pd_input_base = total_in;
         total_in += ft.pdo.input_size;
     }
-    for (auto &io : io_modules_) {
+    for (auto &io : master.io_modules) {
         io.pd_input_base  = total_in;
         io.pd_output_base = total_out;
         total_in  += io.pdo.input_size;
@@ -612,7 +681,7 @@ bool MujocoSimulator::setupSharedMemory() {
     std::cout << "  Total PD input:  " << total_in  << " bytes\n";
     std::cout << "  Total PD output: " << total_out << " bytes\n";
 
-    if (!shm_->createPdDataMemoryProvider(total_in, total_out)) {
+    if (!master.shm->createPdDataMemoryProvider(total_in, total_out)) {
         std::cerr << "\033[1;31m[ERROR]\033[0m createPdDataMemoryProvider failed\n";
         return false;
     }
@@ -629,7 +698,7 @@ bool MujocoSimulator::setupSharedMemory() {
             std::cerr << "[ERROR] Too many PDO variables for slave " << id << '\n';
             return false;
         }
-        rocos::Slave &sl = shm_->ecatBus->slaves[slave_idx];
+        rocos::Slave &sl = master.shm->ecatBus->slaves[slave_idx];
         sl.id = id;
         std::strncpy(sl.name, name.c_str(), MAX_SLAVE_NAME_LEN - 1);
         sl.name[MAX_SLAVE_NAME_LEN - 1] = '\0';
@@ -670,19 +739,19 @@ bool MujocoSimulator::setupSharedMemory() {
         return true;
     };
 
-    for (const auto &j : joints_)
+    for (const auto &j : master.joints)
         if (!populate_slave(j.slave_id, j.joint_name, j.pdo,
                             j.pd_input_base, j.pd_output_base)) return false;
-    for (const auto &ft : ft_sensors_)
+    for (const auto &ft : master.ft_sensors)
         if (!populate_slave(ft.slave_id,
                        "ft_sensor_" + std::to_string(ft.slave_id), ft.pdo,
                        ft.pd_input_base, 0)) return false;
-    for (const auto &io : io_modules_)
+    for (const auto &io : master.io_modules)
         if (!populate_slave(io.slave_id,
                        "io_module_" + std::to_string(io.slave_id), io.pdo,
                        io.pd_input_base, io.pd_output_base)) return false;
 
-    rocos::atomicStore(shm_->ecatBus->slave_num, slave_idx);
+    rocos::atomicStore(master.shm->ecatBus->slave_num, slave_idx);
     return true;
 }
 
@@ -690,11 +759,11 @@ bool MujocoSimulator::setupSharedMemory() {
 // Per-step: read commands from shared memory output area
 // ==========================================================================
 
-void MujocoSimulator::readCommands() {
-    if (!shm_ || !shm_->pdOutputPtr) return;
-    auto *out = static_cast<char *>(shm_->pdOutputPtr);
+void MujocoSimulator::readCommands(MasterState& master) {
+    if (!master.shm || !master.shm->pdOutputPtr) return;
+    auto *out = static_cast<char *>(master.shm->pdOutputPtr);
 
-    for (auto &j : joints_) {
+    for (auto &j : master.joints) {
         char *base = out + j.pd_output_base;
 
         auto off = [&](const char *key) {
@@ -720,18 +789,18 @@ void MujocoSimulator::readCommands() {
 // Per-step: apply control to MuJoCo joints
 // ==========================================================================
 
-void MujocoSimulator::applyControl() {
-    for (auto &j : joints_) {
+void MujocoSimulator::applyControl(MasterState& master) {
+    for (auto &j : master.joints) {
         int dof = j.mj_joint_dof;
         if (dof < 0 || dof >= m_->nv) continue;
 
         if (!j.cia.isEnabled()) {
             // ---- 未使能：锁死或待在原地 ----
             if (!j.hold_valid) {
-                j.hold_position = d_->qpos[dof];
+                j.hold_position = d_->qpos[j.mj_joint_qpos];
                 j.hold_valid    = true;
             }
-            d_->ctrl[dof] = j.hold_position;
+            d_->ctrl[j.mj_actuator] = j.hold_position;
             if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
             j.pos_integral = 0.0;  // 下使能时清零积分器
             continue;
@@ -755,17 +824,17 @@ void MujocoSimulator::applyControl() {
         case 8:   // CSP — 位置控制
         case 6: { // Homing
             // ---- CSP: MuJoCo 执行器跟踪 + 重力前馈 + 积分修正 -----------
-            //  1. ctrl = target → 执行器 kp=20000, kv=500 负责动态跟踪
+            //  1. ctrl = target → 模型中的位置执行器负责动态跟踪
             //  2. qfrc_applied = qfrc_bias → 前馈抵消重力（执行器静态出力→0）
             //  3. qfrc_applied += KI*∫error → 积分补偿前馈残差
-            double tp = cntToUnit(j.target_position, j.cnt_per_unit,
+            double tp = cntToUnit(j.target_position, j.pos_per_unit,
                                   j.ratio, j.offset_pos_cnt);
-            d_->ctrl[dof] = tp;
+            d_->ctrl[j.mj_actuator] = tp;
 
             // ---- 重力前馈 + 积分修正 -------------------------------------
             //  qfrc_bias 直接抵消重力 → 执行器不需产生静态力 → 零残差。
             //  积分仅补偿前馈与真实重力之间的小差异（建模误差等）。
-            double actual = d_->qpos[dof];
+            double actual = d_->qpos[j.mj_joint_qpos];
             double error  = tp - actual;
             double dt     = cycle_time_us_ / 1e6;
 
@@ -776,29 +845,29 @@ void MujocoSimulator::applyControl() {
         }
         case 9: { // CSV — 速度控制
             // 目标速度通过 qfrc_applied 实现：用阻尼差跟踪目标速度
-            double tv = cntToUnit(j.target_velocity, j.cnt_per_unit,
+            double tv = cntToUnit(j.target_velocity, j.vel_per_unit,
                                   j.ratio, 0);
             double verr = tv - d_->qvel[dof];
             constexpr double KV = 100.0;  // 速度跟踪增益
             d_->qfrc_applied[dof] = KV * verr;
             // actuator 以当前位置为目标，不额外发力
-            d_->ctrl[dof] = d_->qpos[dof];
+            d_->ctrl[j.mj_actuator] = d_->qpos[j.mj_joint_qpos];
             break;
         }
         case 10: { // CST — 力矩控制
             double tt = torqueToUnit(j.target_torque, j.torque_per_unit);
             d_->qfrc_applied[dof] = tt;
             // actuator 以当前位置为目标，不额外发力
-            d_->ctrl[dof] = d_->qpos[dof];
+            d_->ctrl[j.mj_actuator] = d_->qpos[j.mj_joint_qpos];
             break;
         }
         default:
             // 未知模式：待在原地
             if (!j.hold_valid) {
-                j.hold_position = d_->qpos[dof];
+                j.hold_position = d_->qpos[j.mj_joint_qpos];
                 j.hold_valid    = true;
             }
-            d_->ctrl[dof] = j.hold_position;
+            d_->ctrl[j.mj_actuator] = j.hold_position;
             if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
             update_hold_position = false;
             break;
@@ -806,7 +875,7 @@ void MujocoSimulator::applyControl() {
 
         // 持续更新锁死位置
         if (update_hold_position) {
-            j.hold_position = d_->qpos[dof];
+            j.hold_position = d_->qpos[j.mj_joint_qpos];
             j.hold_valid    = true;
         }
     }
@@ -862,29 +931,42 @@ void MujocoSimulator::stepPhysics() {
 // Uses dynamic PDO layout offsets from YAML.
 // ==========================================================================
 
-void MujocoSimulator::writeSensorData() {
-    if (!shm_ || !shm_->ecatBus) return;
-    auto *in = static_cast<char *>(shm_->pdInputPtr);
+void MujocoSimulator::writeSensorData(MasterState& master) {
+    if (!master.shm || !master.shm->ecatBus) return;
+    auto *in = static_cast<char *>(master.shm->pdInputPtr);
 
     auto now = std::chrono::system_clock::now().time_since_epoch();
-    rocos::atomicStore(shm_->ecatBus->timestamp,
+    rocos::atomicStore(master.shm->ecatBus->timestamp,
         std::chrono::duration_cast<std::chrono::microseconds>(now).count());
-    rocos::atomicStore(shm_->ecatBus->heartbeat_mono_ns, rocos::monotonicNs());
+    rocos::atomicStore(master.shm->ecatBus->heartbeat_mono_ns, rocos::monotonicNs());
     if (!in) return;
 
-    for (const auto &j : joints_) {
+    for (const auto &j : master.joints) {
         char *base = in + j.pd_input_base;
         int   dof  = j.mj_joint_dof;
 
-        double q    = (dof >= 0) ? d_->qpos[dof] : 0.0;
+        double q    = (dof >= 0) ? d_->qpos[j.mj_joint_qpos] : 0.0;
         double qdot = (dof >= 0) ? d_->qvel[dof] : 0.0;
-        // 总力矩 = 执行器力 + 外部施加力。CSP 模式使用仿真侧 PID 通过
-        // qfrc_applied 施力（ctrl 被中和），CSV/CST 同理。求和覆盖所有模式。
+        // Total generalized actuator force plus the controller's applied force.
+        // Mouse/body forces and contact reactions are not included in this PDO.
         double tau  = (dof >= 0) ? (d_->qfrc_actuator[dof] + d_->qfrc_applied[dof]) : 0.0;
 
-        int32_t pc = unitToCnt(q,    j.cnt_per_unit, j.ratio, j.offset_pos_cnt, true);
-        int32_t vc = unitToCnt(qdot, j.cnt_per_unit, j.ratio, j.offset_pos_cnt);
-        int16_t tc = static_cast<int16_t>(tau * j.torque_per_unit);
+        int32_t pc = unitToCnt(q,    j.pos_per_unit, j.ratio, j.offset_pos_cnt, true);
+        int32_t vc = unitToCnt(qdot, j.vel_per_unit, j.ratio);
+        auto torque_count = [&](double scale) {
+            const int32_t raw = unitToCnt(tau, scale, 1.0);
+            if (raw < std::numeric_limits<int16_t>::min() ||
+                raw > std::numeric_limits<int16_t>::max()) {
+                throw std::out_of_range("Torque feedback exceeds int16 range");
+            }
+            return static_cast<int16_t>(raw);
+        };
+        const int16_t tc = torque_count(j.torque_per_unit);
+        // The alternate torque channel has an int32 PDO, unlike load_torque.
+        const int32_t secondary = j.load_torque_in_secondary_position
+            ? unitToCnt(tau, j.load_torque_per_unit, 1.0) : pc;
+        const int16_t load = j.load_torque_in_secondary_position
+            ? 0 : torque_count(j.load_torque_per_unit);
 
         auto off = [&](const char *key) {
             return j.pdo.findOffset(key, true);
@@ -900,8 +982,8 @@ void MujocoSimulator::writeSensorData() {
         W(position_actual_value,    pc,                int32_t);
         W(velocity_actual_value,    vc,     int32_t);
         W(torque_actual_value,      tc,     int16_t);
-        W(load_torque_value,        tc,     int16_t);
-        W(secondary_position_value, pc,     int32_t);
+        W(load_torque_value,        load,     int16_t);
+        W(secondary_position_value, secondary,     int32_t);
         W(secondary_velocity_value, vc,     int32_t);
         W(digital_inputs,           0,      int32_t);
         W(digital_outputs,          0,      int32_t);
@@ -909,7 +991,7 @@ void MujocoSimulator::writeSensorData() {
     }
 
     // FT sensors — write zeros for now
-    for (const auto &ft : ft_sensors_) {
+    for (const auto &ft : master.ft_sensors) {
         char *base = in + ft.pd_input_base;
         for (const auto &v : ft.pdo.inputs) {
             std::memset(base + v.offset, 0, v.size);
@@ -917,7 +999,7 @@ void MujocoSimulator::writeSensorData() {
     }
 
     // IO modules — write zeros
-    for (const auto &io : io_modules_) {
+    for (const auto &io : master.io_modules) {
         char *base = in + io.pd_input_base;
         for (const auto &v : io.pdo.inputs) {
             std::memset(base + v.offset, 0, v.size);
@@ -929,21 +1011,17 @@ void MujocoSimulator::writeSensorData() {
 // Per-step: signal waiting clients
 // ==========================================================================
 
-void MujocoSimulator::signalClients() {
-    (void)shm_->notifyClients();
-}
-
 // Mailbox polling and waiting stay off the simulation thread. Unsupported
 // commands are rejected by rocos-shm using supported_cmds before this handler.
-void MujocoSimulator::commandLoop() {
+void MujocoSimulator::commandLoop(MasterState& master) {
     while (!stop_commands_.load()) {
-        shm_->processCommand([this](const rocos::AsyncCommandBox &request,
+        master.shm->processCommand([this, &master](const rocos::AsyncCommandBox &request,
                                     rocos::AsyncCommandBox &) -> int32_t {
             if (request.cmd_type != rocos::CMD_RESET_STATS) {
                 return rocos::UNSUPPORTED;
             }
-            reset_requested_.store(request.cmd_id);
-            while (reset_completed_.load() != request.cmd_id) {
+            master.reset_requested.store(request.cmd_id);
+            while (master.reset_completed.load() != request.cmd_id) {
                 if (stop_commands_.load() ||
                     rocos::monotonicNs() >= request.deadline_mono_ns) {
                     // A paused cycle may still consume the reset later.
@@ -957,32 +1035,32 @@ void MujocoSimulator::commandLoop() {
     }
 }
 
-void MujocoSimulator::updateCycleStats() {
+void MujocoSimulator::updateCycleStats(MasterState& master) {
     const uint64_t now = rocos::monotonicNs();
-    const uint64_t reset = reset_requested_.load();
-    auto &bus = *shm_->ecatBus;
-    if (reset != reset_completed_.load()) {
-        cycle_count_ = 0;
-        min_cycle_us_ = max_cycle_us_ = avg_cycle_us_ = 0.0;
-        last_cycle_ns_ = 0;
+    const uint64_t reset = master.reset_requested.load();
+    auto &bus = *master.shm->ecatBus;
+    if (reset != master.reset_completed.load()) {
+        master.cycle_count = 0;
+        master.min_cycle_us = master.max_cycle_us = master.avg_cycle_us = 0.0;
+        master.last_cycle_ns = 0;
         rocos::atomicStore(bus.min_cycle_time, 0.0);
         rocos::atomicStore(bus.max_cycle_time, 0.0);
         rocos::atomicStore(bus.avg_cycle_time, 0.0);
         rocos::atomicStore(bus.current_cycle_time, 0.0);
-        reset_completed_.store(reset);
-    } else if (last_cycle_ns_ != 0) {
-        const double elapsed_us = (now - last_cycle_ns_) / 1000.0;
-        min_cycle_us_ = cycle_count_ == 0 ? elapsed_us
-                                        : std::min(min_cycle_us_, elapsed_us);
-        max_cycle_us_ = std::max(max_cycle_us_, elapsed_us);
-        ++cycle_count_;
-        avg_cycle_us_ += (elapsed_us - avg_cycle_us_) / cycle_count_;
-        rocos::atomicStore(bus.min_cycle_time, min_cycle_us_);
-        rocos::atomicStore(bus.max_cycle_time, max_cycle_us_);
-        rocos::atomicStore(bus.avg_cycle_time, avg_cycle_us_);
+        master.reset_completed.store(reset);
+    } else if (master.last_cycle_ns != 0) {
+        const double elapsed_us = (now - master.last_cycle_ns) / 1000.0;
+        master.min_cycle_us = master.cycle_count == 0 ? elapsed_us
+                                        : std::min(master.min_cycle_us, elapsed_us);
+        master.max_cycle_us = std::max(master.max_cycle_us, elapsed_us);
+        ++master.cycle_count;
+        master.avg_cycle_us += (elapsed_us - master.avg_cycle_us) / master.cycle_count;
+        rocos::atomicStore(bus.min_cycle_time, master.min_cycle_us);
+        rocos::atomicStore(bus.max_cycle_time, master.max_cycle_us);
+        rocos::atomicStore(bus.avg_cycle_time, master.avg_cycle_us);
         rocos::atomicStore(bus.current_cycle_time, elapsed_us);
     }
-    last_cycle_ns_ = now;
+    master.last_cycle_ns = now;
 }
 
 // ==========================================================================

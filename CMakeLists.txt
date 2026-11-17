@@ -158,6 +158,22 @@ if(BUILD_TESTING)
         ROCOS_MUJOCO_VERSION_FULL="${ROCOS_MUJOCO_VERSION}")
     add_test(NAME mujoco_shm_v2 COMMAND mujoco_shm_test)
     set_tests_properties(mujoco_shm_v2 PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
+    add_executable(dualarm_shm_test tests/dualarm_shm_test.cpp)
+    target_link_libraries(dualarm_shm_test PRIVATE rocos_mujoco Threads::Threads)
+    target_compile_definitions(dualarm_shm_test PRIVATE
+        ROCOS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME dualarm_shm COMMAND dualarm_shm_test)
+    set_tests_properties(dualarm_shm PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME startup_config COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_config_test.py
+            $<TARGET_FILE:rocos_mujoco_sim> ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(startup_config PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+    endif()
+
 endif()
 
 # ==========================================================================

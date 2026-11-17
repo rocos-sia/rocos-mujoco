@@ -11,9 +11,9 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 #include <mujoco/mujoco.h>
@@ -85,12 +85,21 @@ private:
 // MujocoSimulator
 // ==========================================================================
 
+struct MasterConfig {
+    int ecat_id = 0;
+    std::string hardware_config;
+};
+
 class MujocoSimulator {
 public:
     MujocoSimulator(const std::string &urdf_path,
                     const std::string &hw_config_path,
                     int                ecat_id       = 0,
                     double             cycle_time_us = 1000.0);
+
+    MujocoSimulator(const std::string& model_path,
+                    const std::vector<MasterConfig>& masters,
+                    double cycle_time_us = 1000.0);
 
     ~MujocoSimulator();
 
@@ -107,7 +116,7 @@ public:
 
     // ---- Accessors ----------------------------------------------------
     double getSimTime()    const { return sim_time_; }
-    int    getJointCount() const { return static_cast<int>(joints_.size()); }
+    int    getJointCount() const;
     double getCycleTimeUs() const { return cycle_time_us_; }
     const std::string& getModelPath()  const { return urdf_path_; }
     const std::string& getConfigPath() const { return hw_config_path_; }
@@ -117,23 +126,24 @@ public:
 
 private:
     friend struct SimulatorTestAccess;
+    struct MasterState;
     // ---- Initialization helpers ---------------------------------------
     bool loadModel(const std::string &urdf_path);
-    bool loadHardwareConfig(const std::string &yaml_path);
-    bool setupSharedMemory();
+    bool loadHardwareConfig(MasterState& master);
+    bool setupSharedMemory(MasterState& master);
 
     /// Build PDO layout for one slave from its YAML config node.
     SlavePdoLayout buildPdoLayout(const std::string &type,
                                   const YAML::Node  &node);
 
     // ---- Per-step helpers ---------------------------------------------
-    void readCommands();
-    void applyControl();
+    void readCommands(MasterState& master);
+    void applyControl(MasterState& master);
     void stepPhysics();
-    void writeSensorData();
-    void signalClients();
-    void commandLoop();
-    void updateCycleStats();
+    void writeSensorData(MasterState& master);
+
+    void commandLoop(MasterState& master);
+    void updateCycleStats(MasterState& master);
 
     // ---- Unit conversions ---------------------------------------------
     double  cntToUnit(double cnt, double cnt_per_unit, double ratio,
@@ -147,16 +157,8 @@ private:
     mjData  *d_ = nullptr;
 
     // ---- Shared memory ------------------------------------------------
-    rocos::SharedMemoryConfig *shm_ = nullptr;
-    std::thread command_thread_;
+    std::vector<std::unique_ptr<MasterState>> masters_;
     std::atomic<bool> stop_commands_{false};
-    std::atomic<uint64_t> reset_requested_{0};
-    std::atomic<uint64_t> reset_completed_{0};
-    uint64_t last_cycle_ns_ = 0;
-    uint64_t cycle_count_ = 0;
-    double min_cycle_us_ = 0.0;
-    double max_cycle_us_ = 0.0;
-    double avg_cycle_us_ = 0.0;
 
     // ---- Joint mapping ------------------------------------------------
     struct JointEntry {
@@ -167,7 +169,10 @@ private:
         std::string joint_name;
         int         pd_input_base  = 0;
         int         pd_output_base = 0;
-        double      cnt_per_unit    = 1.0;
+        double      pos_per_unit    = 1.0;
+        double      vel_per_unit    = 1.0;
+        double      load_torque_per_unit = 1.0;
+        bool        load_torque_in_secondary_position = false;
         double      torque_per_unit = 1.0;
         double      ratio           = 1.0;
         int32_t     offset_pos_cnt  = 0;
@@ -190,7 +195,6 @@ private:
         double pos_integral{0.0};
         int8_t prev_mode_of_operation{-1};  // 用于检测模式切换以重置积分
     };
-    std::vector<JointEntry> joints_;
 
     // ---- FT sensor mapping --------------------------------------------
     struct FTEntry {
@@ -198,7 +202,6 @@ private:
         int            pd_input_base = 0;
         SlavePdoLayout pdo;            ///< dynamic PDO layout from YAML
     };
-    std::vector<FTEntry> ft_sensors_;
 
     // ---- IO module mapping --------------------------------------------
     struct IOEntry {
@@ -209,7 +212,23 @@ private:
         int di_channels = 0, do_channels = 0;
         int ai_channels = 0, ao_channels = 0;
     };
-    std::vector<IOEntry> io_modules_;
+    struct MasterState {
+        explicit MasterState(const MasterConfig& config);
+        ~MasterState();
+        MasterConfig config;
+        std::unique_ptr<rocos::SharedMemoryConfig> shm;
+        std::vector<JointEntry> joints;
+        std::vector<FTEntry> ft_sensors;
+        std::vector<IOEntry> io_modules;
+        std::thread command_thread;
+        std::atomic<uint64_t> reset_requested{0};
+        std::atomic<uint64_t> reset_completed{0};
+        uint64_t last_cycle_ns = 0;
+        uint64_t cycle_count = 0;
+        double min_cycle_us = 0.0;
+        double max_cycle_us = 0.0;
+        double avg_cycle_us = 0.0;
+    };
 
     // ---- Paths & parameters -------------------------------------------
     std::string urdf_path_;

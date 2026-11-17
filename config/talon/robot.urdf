@@ -61,7 +61,7 @@
         <axis xyz="0 0 1"/>
         <hardware id="0" type="driver">
             <limit lower="-2.84" upper="2.84"  vel="3.0" acc="10.0" jerk="150.0" effort="30.0"/>
-            <transform ratio="1.0" offset_pos_cnt="0" cnt_per_unit="156455.678" torque_per_unit="1.0"
+            <transform ratio="1.0" offset_pos_cnt="0" pos_per_unit="156455.678" torque_per_unit="1.0"
                        user_unit_name="rad"/>
              <inputs name="Inputs">
                 <status_word>Statusword</status_word>
@@ -120,7 +120,7 @@
         <axis xyz="0 0 1"/>
         <hardware id="1" type="driver">
             <limit lower="-2.22" upper="2.22" vel="3.0" acc="10.0" jerk="150.0" effort="30.0" />
-            <transform ratio="1.0" offset_pos_cnt="0" cnt_per_unit="156455.678" torque_per_unit="1.0" user_unit_name="rad"/>
+            <transform ratio="1.0" offset_pos_cnt="0" pos_per_unit="156455.678" torque_per_unit="1.0" user_unit_name="rad"/>
             <inputs name="Inputs">
                 <status_word>Statusword</status_word>
                 <position_actual_value>Position actual value</position_actual_value>
@@ -177,7 +177,7 @@
         <axis xyz="0 0 1"/>
         <hardware id="2" type="driver">
             <limit lower="-2.84" upper="2.84" vel="3.0" acc="10.0" jerk="150.0" effort="30.0" />
-            <transform ratio="1.0" offset_pos_cnt="0" cnt_per_unit="156455.678" torque_per_unit="1.0" user_unit_name="rad"/>
+            <transform ratio="1.0" offset_pos_cnt="0" pos_per_unit="156455.678" torque_per_unit="1.0" user_unit_name="rad"/>
             <inputs name="Inputs">
                 <status_word>Statusword</status_word>
                 <position_actual_value>Position actual value</position_actual_value>
@@ -235,7 +235,7 @@
         <axis xyz="0 0 1"/>
         <hardware id="3" type="driver">
             <limit lower="-2.23" upper="2.23" vel="3.0" acc="10.0" jerk="150.0" effort="30.0" />
-            <transform ratio="1.0" offset_pos_cnt="0" cnt_per_unit="156455.678" torque_per_unit="1.0" user_unit_name="rad"/>
+            <transform ratio="1.0" offset_pos_cnt="0" pos_per_unit="156455.678" torque_per_unit="1.0" user_unit_name="rad"/>
             <inputs name="Inputs">
                 <status_word>Statusword</status_word>
                 <position_actual_value>Position actual value</position_actual_value>
@@ -292,7 +292,7 @@
         <axis xyz="0 0 1"/>
         <hardware id="4" type="driver">
             <limit lower="-2.71" upper="2.71" vel="3.0" acc="10.0" jerk="150.0" effort="30.0" />
-            <transform ratio="1.0" offset_pos_cnt="0" cnt_per_unit="156455.678" torque_per_unit="1.0" user_unit_name="rad"/>
+            <transform ratio="1.0" offset_pos_cnt="0" pos_per_unit="156455.678" torque_per_unit="1.0" user_unit_name="rad"/>
             <inputs name="Inputs">
                 <status_word>Statusword</status_word>
                 <position_actual_value>Position actual value</position_actual_value>
@@ -349,7 +349,7 @@
         <axis xyz="0 0 1"/>
         <hardware id="5" type="driver">
             <limit lower="-2.11" upper="2.11" vel="3.0" acc="10.0" jerk="150.0" effort="30.0" />
-            <transform ratio="1.0" offset_pos_cnt="0" cnt_per_unit="130379.73" torque_per_unit="1.0" user_unit_name="rad"/>
+            <transform ratio="1.0" offset_pos_cnt="0" pos_per_unit="130379.73" torque_per_unit="1.0" user_unit_name="rad"/>
             <inputs name="Inputs">
                 <status_word>Statusword</status_word>
                 <position_actual_value>Position actual value</position_actual_value>
@@ -406,7 +406,7 @@
         <axis xyz="0 0 1"/>
         <hardware id="6" type="driver">
             <limit lower="-2.84" upper="2.84" vel="3.0" acc="10.0" jerk="150.0" effort="30.0" />
-            <transform ratio="1.0" offset_pos_cnt="0" cnt_per_unit="130379.73" torque_per_unit="1.0" user_unit_name="rad"/>
+            <transform ratio="1.0" offset_pos_cnt="0" pos_per_unit="130379.73" torque_per_unit="1.0" user_unit_name="rad"/>
             <inputs name="Inputs">
                 <status_word>Statusword</status_word>
                 <position_actual_value>Position actual value</position_actual_value>

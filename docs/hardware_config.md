@@ -6,13 +6,11 @@
 
 ## 与 rocos-app 共用配置
 
-rocos-app 的 `config/robots/talon/hardware.yaml` 与本仓库的 `config/talon/hardware.yaml` 在本次核对时只有文件头的模型来源注释不同：7 个驱动的 ID、关节名称、`torque_source`、限位、换算参数和 PDO 名称全部一致。文件名和存放目录不影响解析，无需转换格式。
+MuJoCo 按当前 rocos-app 的换算字段读取硬件配置：`pos_per_unit`、`vel_per_unit`、`torque_per_unit`、`load_torque_per_unit`、`ratio` 和 `offset_pos_cnt`。两端应引用同一份硬件文件，避免副本的倍率与 PDO 名称发生偏差；文件名和存放目录不影响解析。
 
-[Talon 启动配置](../config/talon/mjcf/mujoco.yaml) 通过 `hardware_config: ../hardware.yaml` 引用 Talon 目录的硬件配置，MuJoCo 场景由同目录的 `scene.xml` 加载。rocos-app 的机器人配置也可引用同一份 `hardware.yaml`；两端共用一个 Talon 目录时应确保最终指向同一文件。
+[Talon 启动配置](../config/talon/mjcf/mujoco.yaml) 引用本仓库的 `config/talon/hardware.yaml`，已迁移到 `pos_per_unit`。双臂的 [App 配置](../config/dualarm/README.md#两个-app-进程) 与仿真配置分别共用 `hardware_left.yaml` 和 `hardware_right.yaml`。不能假设不同仓库的 Talon 文件始终逐字段一致。
 
-`torque_source` **需要保留**：rocos-app 的 `Hardware::GetJointLoadTorque()` 根据它选择关节负载力矩反馈通道，`load_torque` 使用 `load_torque_value`（int16，按 `torque_per_unit` 换算），`secondary_position` 使用 `secondary_position_value`（int32，按位置计数公式换算）。Talon 的 `hardware.yaml` 已为全部 7 轴配置 `load_torque`，无需重复添加或修改。
-
-MuJoCo 当前同时发布驱动力矩和负载力矩，二者数值相同，因此 Talon 的 `load_torque` 配置可直接共用。仿真器不读取 `torque_source`，且辅助位置反馈仍是位置计数；若将共用配置改为 `secondary_position`，rocos-app 会把位置解码成负载力矩，当前仿真不支持这种力矩通道复用。
+`torque_source` 选择负载力矩反馈通道：`load_torque` 使用 `load_torque_value`（int16），`secondary_position` 使用 `secondary_position_value`（int32）。两种通道均按 `load_torque_per_unit` 换算，不使用位置倍率或位置零偏。MuJoCo 根据同一字段编码对应 PDO；驱动力矩则独立按 `torque_per_unit` 编码。当前两种力矩的物理来源均为总驱动力矩，详见 2.2。
 
 两端对省略 PDO 字段的处理有所不同：rocos-app 只绑定配置了非空名称的字段；仿真器在 `inputs` / `outputs` 段存在时会为省略的已知字段补默认名称（见第 3 节）。这些额外 PDO 不妨碍 Talon 按名称绑定已配置字段。
 
@@ -24,7 +22,7 @@ MuJoCo 当前同时发布驱动力矩和负载力矩，二者数值相同，因�
 | --- | --- | --- |
 | `hardware` | 数组 | 必须存在且为数组；缺失或类型不符会导致加载失败。 |
 | `hardware[].type` | 字符串 | 使用 `driver`、`ft_sensor` 或 `io`。缺少 `type` 的条目及未知类型目前会被跳过。 |
-| `hardware[].id` | 整数 | 应显式填写非负、唯一的从站标识，并与控制端一致。解析器缺省值为 `-1`，目前不检查非负性或唯一性。 |
+| `hardware[].id` | 整数 | 应显式填写非负、唯一的从站标识，并与控制端一致。解析器缺省值为 `-1`，负数或同一主站内重复值会导致初始化失败；不同主站可复用同一从站 ID。 |
 | `hardware[].inputs` | 映射 | 设备反馈到控制端的 PDO 定义。键是固定逻辑字段，值是对外发布的变量名称字符串。 |
 | `hardware[].outputs` | 映射 | 控制端发送到设备的 PDO 定义；`ft_sensor` 不生成输出区。 |
 
@@ -39,43 +37,45 @@ MuJoCo 当前同时发布驱动力矩和负载力矩，二者数值相同，因�
 | 字段 | 类型 | 缺省值 | 含义 |
 | --- | --- | --- | --- |
 | `joint_name` | 字符串 | `joint_<id>` | MuJoCo 模型中的关节名称，区分大小写；建议始终显式填写。 |
+| `torque_source` | 字符串 | `load_torque` | `secondary_position` 将负载力矩编码到辅助位置 PDO，其他值使用普通负载力矩通道。 |
 | `transform` | 映射 | 各数值使用下表默认值 | PDO 原始计数与模型物理量之间的换算参数。 |
 | `inputs` | 映射 | 整段缺失时不生成输入 PDO | 支持字段见 3.2。 |
 | `outputs` | 映射 | 整段缺失时不生成输出 PDO | 支持字段见 3.3。 |
 
-程序按 `joint_name` 查询关节，并从模型中取得自由度索引。名称不存在时，当前实现仍保留该驱动条目，启动日志中的 `mj_id` 为 `-1`；该条目不施加控制，物理反馈按零值进行计数换算。应在使用前确认所有驱动的 `mj_id` 都有效。
+程序按 `joint_name` 查询模型关节，分别获取 `jnt_qposadr`、`jnt_dofadr`，并按执行器的关节传动绑定查找执行器，不要求这三个索引相同，也不依赖执行器书写顺序。启动日志打印主站 ID、位置地址和执行器索引。
 
-当前共享内存驱动控制路径面向单自由度 `hinge` / `slide` 关节，并使用自由度索引访问 `qpos` 和 `ctrl`。模型需要满足位置索引与自由度索引对应，且每个被控自由度有同索引、符合位置目标控制语义的执行器。仅填写 `joint_name` 不会自动查找或重排执行器。
-
-包含 `free` / `ball` 关节或不同执行器排列的模型，不应直接假定该控制映射成立。侧栏能显示多自由度关节的数据，不代表共享内存驱动控制路径已支持相同映射。
+当前控制路径支持单自由度 `hinge` / `slide` 关节，每个被控关节必须绑定一个单位齿比、无激活动力学的位置执行器。未知关节、`free` / `ball` 被控关节、缺失或多个执行器、非位置执行器，以及跨主站重复映射同一关节都会导致初始化失败。侧栏显示多自由度关节的能力独立于驱动控制映射。
 
 ### 2.2 transform：单位换算
 
 | 字段 | 类型 | 默认值 | 含义与填写要求 |
 | --- | --- | --- | --- |
-| `cnt_per_unit` | 数值 | `1.0` | 每单位位置的计数，旋转关节按 rad，滑动关节按 m；必须配置为有限非零值。 |
+| `pos_per_unit` | 数值 | `1.0` | 每单位位置的计数，旋转关节按 rad，滑动关节按 m；必须配置为有限非零值。 |
+| `vel_per_unit` | 数值 | `pos_per_unit` | 每单位速度的计数；速度不使用位置零偏。 |
+| `load_torque_per_unit` | 数值 | `1.0` | 负载力矩独立倍率；与 `torque_per_unit` 分别配置。 |
 | `ratio` | 数值 | `1.0` | 位置、速度换算倍率；必须为有限非零值，与控制端的倍率定义保持一致。 |
-| `offset_pos_cnt` | 32 位整数 | `0` | 位置零点的计数偏移；当前速度反馈也会加上此偏移，详见下方公式。 |
+| `offset_pos_cnt` | 32 位整数 | `0` | 位置零点的计数偏移；仅用于位置。 |
 | `torque_per_unit` | 数值 | `1.0` | 单位关节力矩或力对应的原始数值倍率；旋转关节按 N·m，滑动关节按 N；必须为有限非零值。 |
 | `user_unit_name` | 字符串 | 不参与读取 | 示例中的说明性字段，通常填写 `rad` 或 `m`；不会触发单位转换。 |
 
-非零、有限的倍率是正确配置要求，当前解析器没有主动校验这些条件。不要依赖错误配置在加载阶段一定被拒绝。
+加载器检查以上五个倍率必须有限且非零，否则初始化失败。字段及默认值与当前 rocos-app 一致；旧字段 `cnt_per_unit` 会明确报错，应迁移为 `pos_per_unit`，不能同时保留。
 
-令 `C = cnt_per_unit`、`R = ratio`、`O = offset_pos_cnt`、`T = torque_per_unit`。当前换算行为如下，`trunc` 表示向零截断，所有整数转换都要求结果处于目标类型可表示范围内：
+令 `P = pos_per_unit`、`V = vel_per_unit`、`R = ratio`、`O = offset_pos_cnt`、`T = torque_per_unit`、`L = load_torque_per_unit`。当前换算行为如下，`round` 表示四舍五入（半整数远离零），`trunc` 表示向零截断；位置/速度转换会拒绝非有限值或超出 int32 范围的结果：
 
 ```text
-目标位置：q_target   = (target_position - O) / C / R
-目标速度：v_target   = target_velocity / C / R
+目标位置：q_target   = (target_position - O) / P / R
+目标速度：v_target   = target_velocity / V / R
 目标力矩：tau_target = target_torque / T
 
-位置反馈：position_actual_value = trunc(q * C * R) + O
-速度反馈：velocity_actual_value = trunc(v * C * R) + O
+位置反馈：position_actual_value = round(q * P * R) + O
+速度反馈：velocity_actual_value = trunc(v * V * R)
 力矩反馈：torque_actual_value   = trunc(tau * T)
+负载力矩：load_torque_value     = trunc(tau * L)
 ```
 
-其中 `tau = qfrc_actuator + qfrc_applied`，与仿真器当前反馈口径一致；它不是单独的力传感器测量值。`load_torque_value` 与 `torque_actual_value` 相同；次级位置、速度分别复制对应的主反馈。
+其中 `tau = qfrc_actuator + qfrc_applied`，与仿真器当前反馈口径一致；它不是单独的力传感器测量值。`torque_source: load_torque`（默认）时，负载力矩通过 int16 的 `load_torque_value` 返回；`torque_source: secondary_position` 时，通过 int32 的 `secondary_position_value` 返回 `trunc(tau * L)`，并将 `load_torque_value` 置零。其他情况下次级位置复制位置反馈，次级速度始终复制速度反馈。
 
-特别注意：当前**速度反馈带 `O`，目标速度不减 `O`**。这是现有协议实现行为，不应按常规速度无零偏的假设另行解码。原始位置/速度为 `int32`，力矩为 `int16`，代码没有饱和裁剪；配置倍率时需保证全工作范围可表示。
+位置/速度 PDO 为 `int32`，普通力矩 PDO 为 `int16`。代码拒绝非有限值和越界反馈，不做饱和裁剪；配置倍率时需保证全工作范围可表示。速度反馈已按 App 语义移除位置零偏，旧控制端如曾依赖该偏移需同步迁移。
 
 旋转关节使用 rad、rad/s、N·m；滑动关节使用 m、m/s、N。`user_unit_name: deg` 不会让程序自动把角度转换为弧度。
 
@@ -83,7 +83,6 @@ MuJoCo 当前同时发布驱动力矩和负载力矩，二者数值相同，因�
 
 | 字段 | 示例约定 | 当前仿真行为 |
 | --- | --- | --- |
-| `torque_source` | 例如 `load_torque` | 不读取；不会改变上述力矩反馈来源。 |
 | `limit.lower` / `limit.upper` | 位置下限/上限，rad 或 m | 不用于限制仿真命令。 |
 | `limit.vel` | 速度上限，rad/s 或 m/s | 不用于限制仿真命令。 |
 | `limit.acc` | 加速度上限，rad/s² 或 m/s² | 不用于限制仿真命令。 |
@@ -205,7 +204,7 @@ hardware:
     type: driver
     joint_name: joint_1
     transform:
-      cnt_per_unit: 156455.678
+      pos_per_unit: 156455.678
       ratio: 1.0
       offset_pos_cnt: 0
       torque_per_unit: 1.0
@@ -242,7 +241,7 @@ hardware:
     outputs: {}
 ```
 
-滑动关节的 `cnt_per_unit` 按每米计数配置，`torque_per_unit` 按每牛顿原始数值倍率配置，并将说明性字段 `user_unit_name` 填为 `m`。
+滑动关节的 `pos_per_unit` 按每米计数配置，`torque_per_unit` 按每牛顿原始数值倍率配置，并将说明性字段 `user_unit_name` 填为 `m`。
 
 ## 7. 配置边界与排查
 
@@ -250,7 +249,7 @@ hardware:
 
 初始化校验每个 PDO 的字节偏移、大小与映射边界，支持某一方向或两个方向均为空。现有 YAML 字段只生成整字节 PDO；非字节对齐映射不受支持。多字节数值使用 `memcpy` 访问，允许紧凑布局中的非自然对齐字节偏移。v2 不改变已有变量名称和计数换算方式。
 
-当前加载器不是完整的 schema 校验器，不会检查重复 `id`、未知关节或倍率有效性。正确配置应满足这些约束，并在启动日志中核对设备数量、每个驱动的 `mj_id`、`pdo_in` / `pdo_out` 字节数。v2 邮箱的 `target_slave` 是描述数组索引，不是这里配置的从站 `id`；仿真器目前不支持 SDO。
+当前加载器检查从站 ID 非负且在主站内唯一、关节/执行器映射和倍率有效性，但不是完整的 schema 校验器。应在启动日志中核对设备数量、每个驱动的主站 ID、`qpos`、`actuator`、`pdo_in` / `pdo_out` 字节数。v2 邮箱的 `target_slave` 是描述数组索引，不是这里配置的从站 `id`；仿真器目前不支持 SDO。
 
 常见问题：
 
@@ -258,6 +257,6 @@ hardware:
 - **`YAML parse`**：文件无法读取、YAML 语法错误或字段类型无法转换。
 - **驱动存在但没有动作**：检查关节名称、执行器索引对应关系、控制字使能状态与控制模式。
 - **控制端找不到 PDO**：检查名称大小写和空格；确认没有将字段设为 `""`，也没有省略整个方向段。
-- **位置、速度偏移异常**：两端核对 `cnt_per_unit`、`ratio`、`offset_pos_cnt`，特别是速度反馈的偏移约定。
+- **位置、速度偏移异常**：两端核对 `pos_per_unit`、`vel_per_unit`、`ratio`、`offset_pos_cnt`；速度无位置零偏。
 - **力矩数值异常**：核对 `torque_per_unit` 和 `int16` 表示范围；旋转关节用 N·m，滑动关节用 N。
 - **FT / IO 始终为零**：这是当前实现的占位行为，不代表通过增加通道数或修改 PDO 名称就能启用测量。

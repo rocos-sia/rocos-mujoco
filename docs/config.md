@@ -28,6 +28,7 @@
 | --- | --- | --- | --- |
 | `model` | 字符串 | 新配置必填，无默认模型 | 直接指定存在的 MJCF 或 URDF 文件；不能填目录名、空字符串或不存在的文件。 |
 | `hardware_config` | 字符串 | 可选；默认取模型文件同目录的 `hardware_config.yaml` | 显式配置时必须是非空路径；文件在仿真初始化时加载。 |
+| `masters` | 数组 | 可选 | 多主站配置；非空，每项必须包含唯一的非负 `ecat_id` 和非空 `hardware_config`。不能与顶层同名字段混用。 |
 | `ecat_id` | 整数 | 可选，`0` | 非负的共享内存主站标识；连接同一仿真器的控制端应使用相同标识，独立实例使用不同标识。它不是硬件配置中单个从站的 `id`。 |
 | `cycle_time_us` | 数值 | 可选，`1000.0` | 控制周期，单位微秒；必须是有限数，范围为 `[1, 4294967295]`。建议使用整数微秒，例如 `1000.0` 表示 1 ms。 |
 | `duration_sec` | 数值 | 可选，`-1.0` | 运行时长，单位秒；必须是有限数，允许 `-1` 或任意非负值。`-1` 持续运行，`0` 仅初始化，正值按程序累计的仿真时间运行。 |
@@ -110,3 +111,25 @@ model: scene.xml
 ```
 
 模型没有成功加载时，先检查路径基准和模型内部资源；提示硬件配置加载失败时，再按 [硬件配置规范](hardware_config.md) 检查 YAML 内容与关节映射。
+
+## 7. 双臂与多主站
+
+多个主站共享同一个模型和物理周期。先读取所有主站命令，只执行一次物理步进，再分别发布反馈与周期通知。每个主站拥有独立的从站 ID 空间、PDO 区域、命令邮箱和周期统计；任一主站初始化失败时程序退出。
+
+```yaml
+model: scene.xml
+masters:
+  - ecat_id: 0
+    hardware_config: ../hardware_left.yaml
+  - ecat_id: 1
+    hardware_config: ../hardware_right.yaml
+cycle_time_us: 1000.0
+duration_sec: -1.0
+visualize: true
+```
+
+`masters[].hardware_config` 同样以启动 YAML 所在目录为相对路径基准。使用 `masters` 时禁止同时设置顶层 `ecat_id` 或 `hardware_config`，不允许空数组、重复 ID、缺失字段或未知的 master 字段。同一个模型关节只能映射到一个驱动。各主站可以重复使用从站 ID，例如左右各 `0～6`。
+
+原有 Talon 单主站格式和 C++ 构造函数仍可使用；新增多主站构造函数接收 `std::vector<MasterConfig>`。共享内存保持 ABI v2 和原 PDO 定义。C++ 类内部布局发生变化，链接此库的本地 C++ 程序需要重新编译；独立共享内存客户端的协议不变。
+
+完整双臂启动和控制端接入说明见 [双臂说明](../config/dualarm/README.md)。

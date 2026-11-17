@@ -61,3 +61,6 @@ CATKIN_IGNORE
 **/command_log.csv
 **/log
 /.codegraph
+
+# CAD exporter runtime log
+/config/dualarm/export.log

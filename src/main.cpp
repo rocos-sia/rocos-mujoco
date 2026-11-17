@@ -14,6 +14,8 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <set>
+#include <vector>
 
 #include <yaml-cpp/yaml.h>
 
@@ -54,7 +56,7 @@ int main(int argc, char *argv[]) {
 
     std::string model_path;
     std::string config_path;
-    int ecat_id;
+    std::vector<rocos_mujoco::MasterConfig> masters;
     double cycle_time;
     double duration;
     bool visualize;
@@ -66,7 +68,7 @@ int main(int argc, char *argv[]) {
         for (const auto &entry : settings) {
             const std::string key = entry.first.as<std::string>();
             if (key != "model" && key != "urdf" && key != "hardware_config" &&
-                key != "ecat_id" && key != "cycle_time_us" &&
+                key != "ecat_id" && key != "masters" && key != "cycle_time_us" &&
                 key != "duration_sec" && key != "visualize") {
                 throw std::runtime_error("未知启动配置项: " + key);
             }
@@ -87,16 +89,42 @@ int main(int argc, char *argv[]) {
         if (!fs::is_regular_file(model_path)) {
             throw std::runtime_error("model 必须指向存在的 MJCF/URDF 文件: " + model_path);
         }
-        config_path = settings["hardware_config"]
-            ? resolve_path(settings["hardware_config"].as<std::string>())
-            : (fs::path(model_path).parent_path() / "hardware_config.yaml").string();
-        ecat_id = readOption<int>(settings, "ecat_id", 0);
+        if (settings["masters"]) {
+            if (settings["hardware_config"] || settings["ecat_id"]) {
+                throw std::runtime_error("masters 不能与顶层 hardware_config/ecat_id 混用");
+            }
+            const auto entries = settings["masters"];
+            if (!entries.IsSequence() || entries.size() == 0) {
+                throw std::runtime_error("masters 必须为非空数组");
+            }
+            std::set<int> ids;
+            for (const auto& entry : entries) {
+                if (!entry.IsMap() || !entry["ecat_id"] || !entry["hardware_config"]) {
+                    throw std::runtime_error("每个 master 必须包含 ecat_id 和 hardware_config");
+                }
+                for (const auto& field : entry) {
+                    const auto key = field.first.as<std::string>();
+                    if (key != "ecat_id" && key != "hardware_config") {
+                        throw std::runtime_error("未知 master 配置项: " + key);
+                    }
+                }
+                const int id = entry["ecat_id"].as<int>();
+                if (id < 0 || !ids.insert(id).second) {
+                    throw std::runtime_error("ecat_id 必须非负且唯一");
+                }
+                masters.push_back({id, resolve_path(entry["hardware_config"].as<std::string>())});
+            }
+        } else {
+            config_path = settings["hardware_config"]
+                ? resolve_path(settings["hardware_config"].as<std::string>())
+                : (fs::path(model_path).parent_path() / "hardware_config.yaml").string();
+            const int id = readOption<int>(settings, "ecat_id", 0);
+            if (id < 0) throw std::runtime_error("ecat_id 必须为非负整数");
+            masters.push_back({id, config_path});
+        }
         cycle_time = readOption<double>(settings, "cycle_time_us", 1000.0);
         duration = readOption<double>(settings, "duration_sec", -1.0);
         visualize = readOption<bool>(settings, "visualize", false);
-        if (ecat_id < 0) {
-            throw std::runtime_error("ecat_id 必须为非负整数");
-        }
         if (!std::isfinite(cycle_time) || cycle_time < 1.0 ||
             cycle_time > std::numeric_limits<uint32_t>::max()) {
             throw std::runtime_error("cycle_time_us 必须在 [1, 4294967295] 范围内");
@@ -115,8 +143,10 @@ int main(int argc, char *argv[]) {
     std::cout << "║  ROCOS MuJoCo 仿真器 (EtherCAT 主站模拟)                    ║\n";
     std::cout << "╠══════════════════════════════════════════════════════════════╣\n";
     std::cout << "║  模型:      " << std::setw(49) << std::left << model_path  << "║\n";
-    std::cout << "║  配置:      " << std::setw(49) << std::left << config_path << "║\n";
-    std::cout << "║  ecat_id:   " << std::setw(49) << std::left << ecat_id     << "║\n";
+    for (const auto& master : masters) {
+        std::cout << "  ecat_id=" << master.ecat_id
+                  << " hardware_config=" << master.hardware_config << '\n';
+    }
     std::cout << "║  周期:      " << std::setw(46) << std::left
               << (std::to_string(static_cast<uint32_t>(cycle_time)) + " us") << "║\n";
     std::cout << "║  可视化:    " << std::setw(49) << std::left
@@ -124,8 +154,7 @@ int main(int argc, char *argv[]) {
     std::cout << "╚══════════════════════════════════════════════════════════════╝\n\n";
 
     // ---- 创建并运行仿真器 ------------------------------------------------
-    rocos_mujoco::MujocoSimulator sim(model_path, config_path,
-                                       ecat_id, cycle_time);
+    rocos_mujoco::MujocoSimulator sim(model_path, masters, cycle_time);
     if (visualize) {
         sim.enableVisualization();
     }

@@ -20,6 +20,14 @@
 
 namespace rocos_mujoco {
 struct SimulatorTestAccess {
+    static mjData* data(MujocoSimulator& sim) { return sim.d_; }
+    static void feedback(MujocoSimulator& sim) {
+        sim.writeSensorData(*sim.masters_.front());
+    }
+    static void control(MujocoSimulator& sim) {
+        sim.readCommands(*sim.masters_.front());
+        sim.applyControl(*sim.masters_.front());
+    }
     static int32_t position(const MujocoSimulator& sim, double q, double ratio,
                             int32_t offset) {
         return sim.unitToCnt(q, 156455.678, ratio, offset, true);
@@ -212,6 +220,80 @@ void TestInterop(Fixture& fixture, int id) {
     Check(!stopped.connect(), "owner removed IPC resources");
 }
 
+// Exercise the actual PDO path with deliberately different scales and a nonzero
+// encoder offset, so sharing position/velocity/torque transforms cannot pass.
+void TestTransforms(Fixture& fixture, int id) {
+    using rocos_mujoco::MujocoSimulator;
+    using rocos_mujoco::SimulatorTestAccess;
+    const std::string base = "hardware:\n  - type: driver\n    id: 0\n"
+        "    joint_name: joint\n    inputs: {}\n    outputs: {}\n";
+    for (bool secondary : {false, true}) {
+        fixture.WriteHardware(base + (secondary
+            ? "    torque_source: secondary_position\n" : "") +
+            "    transform:\n      pos_per_unit: 1000\n      vel_per_unit: 4000\n"
+            "      ratio: -2\n      offset_pos_cnt: 321\n      torque_per_unit: 100\n"
+            "      load_torque_per_unit: " + (secondary ? "40000\n" : "200\n"));
+        MujocoSimulator sim(fixture.model, fixture.hardware, id);
+        Check(sim.initialize(), "independent transform config");
+        rocos::SharedMemoryConfig client(id);
+        Check(client.connect(), "transform client");
+        auto* data = SimulatorTestAccess::data(sim);
+        data->qpos[0] = 0.125;
+        data->qvel[0] = -0.375;
+        data->qfrc_actuator[0] = -1.75;
+        data->qfrc_applied[0] = 0.5;
+        SimulatorTestAccess::feedback(sim);
+        Check(client.getSlaveInputVarValueByName<int32_t>(0, "Position actual value") == 71,
+              "position scale, negative ratio and offset");
+        Check(client.getSlaveInputVarValueByName<int32_t>(0, "Velocity actual value") == 3000,
+              "velocity uses own scale and no position offset");
+        Check(client.getSlaveInputVarValueByName<int16_t>(0, "Torque actual value") == -125,
+              "motor torque scale");
+        Check(client.getSlaveInputVarValueByName<int16_t>(0, "Analog Input 1") ==
+                  (secondary ? 0 : -250), "load torque independent scale");
+        Check(client.getSlaveInputVarValueByName<int32_t>(0, "Auxiliary position actual value") ==
+                  (secondary ? -50000 : 71), "secondary torque retains int32 range");
+        client.setSlaveOutputVarValueByName<int8_t>(0, "Modes of operation", 8);
+        client.setSlaveOutputVarValueByName<int32_t>(0, "Target position", 71);
+        for (uint16_t word : {6, 7, 15}) {
+            client.setSlaveOutputVarValueByName<uint16_t>(0, "Controlword", word);
+            SimulatorTestAccess::control(sim);
+        }
+        Check(std::abs(data->ctrl[0] - 0.125) < 1e-12, "CSP decodes position scale");
+        client.setSlaveOutputVarValueByName<int8_t>(0, "Modes of operation", 9);
+        client.setSlaveOutputVarValueByName<int32_t>(0, "Target velocity", -2000);
+        SimulatorTestAccess::control(sim);
+        Check(std::abs(data->qfrc_applied[0] - 62.5) < 1e-12,
+              "CSV decodes velocity scale without offset");
+        client.setSlaveOutputVarValueByName<int8_t>(0, "Modes of operation", 10);
+        client.setSlaveOutputVarValueByName<int16_t>(0, "Target torque", -150);
+        SimulatorTestAccess::control(sim);
+        Check(std::abs(data->qfrc_applied[0] + 1.5) < 1e-12, "CST torque scale");
+    }
+    fixture.WriteHardware(base + "    transform:\n      pos_per_unit: 1000\n");
+    {
+        MujocoSimulator sim(fixture.model, fixture.hardware, id);
+        Check(sim.initialize(), "optional transform defaults");
+        rocos::SharedMemoryConfig client(id);
+        Check(client.connect(), "default transform client");
+        auto* data = SimulatorTestAccess::data(sim);
+        data->qvel[0] = 0.125;
+        data->qfrc_applied[0] = 2.0;
+        SimulatorTestAccess::feedback(sim);
+        Check(client.getSlaveInputVarValueByName<int32_t>(0, "Velocity actual value") == 125,
+              "velocity default equals position scale");
+        Check(client.getSlaveInputVarValueByName<int16_t>(0, "Analog Input 1") == 2,
+              "load torque defaults to one as in App");
+    }
+    for (const std::string field : {"cnt_per_unit: 1000", "pos_per_unit: 0",
+            "vel_per_unit: 0", "load_torque_per_unit: .nan",
+            "torque_per_unit: .inf", "ratio: 0"}) {
+        fixture.WriteHardware(base + "    transform:\n      " + field + "\n");
+        MujocoSimulator sim(fixture.model, fixture.hardware, id);
+        Check(!sim.initialize(), "legacy key and invalid transforms rejected");
+    }
+}
+
 void TestCapacityAndEmptyPdos(Fixture& fixture, int id) {
     for (int count : {0, 50, 51}) {
         std::string config = count == 0 ? "hardware: []\n" : "hardware:\n";
@@ -256,6 +338,7 @@ int main() {
         const int id = 20000000 + getpid();
         TestInterop(fixture, id);
         TestCapacityAndEmptyPdos(fixture, id + 1000000);
+        TestTransforms(fixture, id + 2000000);
         std::cout << "MuJoCo/v2 client interoperation passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -1,0 +1,4 @@
+master:
+  id: 0
+  cycle: 1000
+  state: op

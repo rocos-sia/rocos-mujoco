@@ -1,0 +1,22 @@
+schema_version: 1
+robot_config: robot_right.yaml
+device_config: device_right.yaml
+user_config: user.yaml
+http_host: "127.0.0.1"
+http_port: 8090
+http_control_ttl_seconds: 300
+scripts: ../../../../rocos-app/config/scripts
+web_root: ../../../../rocos-app/web
+tool_library: ../../../../rocos-app/config/tools
+logging:
+  directory: ../../../build/dualarm-app/right
+  file_level: info
+  console_level: info
+  max_file_size_mib: 50
+  max_files: 5
+  flush_interval_ms: 1000
+diagnostics:
+  host: "127.0.0.1"
+  port: 8092
+  max_sse_clients: 4
+  max_downloads: 1

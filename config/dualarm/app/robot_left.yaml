@@ -1,0 +1,10 @@
+schema_version: 1
+name: dualarm_left
+package_version: "1.0.0"
+urdf: ../urdf/dualarm.urdf
+base_link: base_link
+tip_link: Left_Link7
+ecat_id: 0
+hardware_config: ../hardware_left.yaml
+master_type: mujoco
+master_config: master_left.yaml

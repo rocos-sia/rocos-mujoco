@@ -219,6 +219,9 @@ ctest --test-dir build/headless --output-on-failure
 | 模型 | 说明 | 场景入口 | 硬件描述 |
 | --- | --- | --- | --- |
 | Talon | 7 轴旋转关节机械臂 | [scene.xml](config/talon/mjcf/scene.xml) | [hardware.yaml](config/talon/hardware.yaml) |
+| Dualarm | 双臂各 7 轴，左主站 0、右主站 1 | [scene.xml](config/dualarm/mjcf/scene.xml) | [左臂](config/dualarm/hardware_left.yaml)、[右臂](config/dualarm/hardware_right.yaml) |
+
+双臂启动：`./build/linux-release/bin/rocos_mujoco_sim --config config/dualarm/mjcf/mujoco.yaml`。场景、临时换算倍率、限位来源和两控制端接入步骤见 [双臂说明](config/dualarm/README.md)。
 
 切换模型时，在启动 YAML 中填写对应文件路径，并选择与该模型匹配的硬件配置。自定义模型也可以放在仓库外，通过绝对路径加载。
 
@@ -229,7 +232,7 @@ ctest --test-dir build/headless --output-on-failure
 
 ## 当前实现范围
 
-- 共享内存驱动控制路径面向单自由度旋转/滑动关节，依赖关节位置索引、自由度索引及执行器索引的对应关系。可视化能够展示多自由度关节，不代表控制映射支持所有模型布局。
+- 共享内存驱动控制路径面向单自由度旋转/滑动关节，按关节传动绑定解析唯一的位置执行器。多个主站共享一次物理步进，关节不能重复归属。可视化能够展示多自由度关节，但不能将这些关节直接映射为驱动。
 - `ft_sensor` 和 `io` 已支持配置与 PDO 布局，但反馈目前固定为零，尚未接入实际测量或输出行为。
 - 硬件 YAML 中的 `limit`、`torque_source` 和 `user_unit_name` 目前不参与仿真控制或单位转换；具体行为以配置规范为准。
 - 循环使用软件定时，控制周期与 MuJoCo 时间步长需分别配置；不提供硬实时周期保证。

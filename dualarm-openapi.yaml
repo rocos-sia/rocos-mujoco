@@ -1,0 +1,5034 @@
+# Local dual-arm implementation contract; not published to online Apifox.
+openapi: 3.1.0
+info:
+  title: ROCOS DualArm API — 独立双臂控制
+  version: 0.4.0-local
+  description: '本文件对应 rocos-app 的 dualarm 分支本地实现，可作为独立 OpenAPI YAML 导入 Apifox。
+
+    rocosDualArmMain 已提供本文件列出的路由；尚未发布到在线 Apifox，不替代在线 ROCOS API 的单臂契约。
+
+    文档版本独立于 App/MuJoCo 产品版本、共享内存 ABI 及上游 API 版本。
+
+
+    目标：一个 rocosDualArmMain 进程、一个 HTTP 监听端口、一份双臂入口配置、两个独立 Robot。
+
+    左右分别绑定 ecat_id=0/1（当前仿真配置），各自持有状态机、控制循环和运动任务。
+
+    可并行提交左右命令；请求到达顺序不构成同步启动、共同结束或同周期执行承诺。
+
+    两个状态接口各自返回单臂快照，不能将连续读取解释为一个原子的双臂快照；timestamp 沿用上游 epoch seconds 定义。
+
+    本版不提供双臂联合轨迹、批量运动、全局停止接口，也不提供跨臂碰撞规划或进程级故障隔离。
+
+
+    路由规则：将已选中的单臂 /api/... 接口映射为 /api/arms/{arm}/...，arm 必须为 left 或 right。
+
+    保留单臂请求体、成功响应及单位；/api/arms 是新增的实例清单接口。
+
+    双臂服务不把无 arm 的单臂路径默认转发给任一臂；缺失臂或不存在的路径返回 HTTP 404。
+
+    对结构正确但 arm 值非法的已知路径，返回 HTTP 200、success=false、code=1001，且不调用任何 Robot。
+
+    未知路径的 JSON 404 响应为双臂路由层新增约定，示例见 x-routing-errors。
+
+
+    控制权按臂隔离：每臂分别 acquire、heartbeat、release，token 仅对签发它的臂有效。
+
+    同一 client_id 可持有左右两个独立 token；客户端须分别保存并续期。
+
+    使用现有 X-Rocos-Control-Token 与 X-Rocos-Client-Id 请求头。
+
+    本版不开放共享 debug-token 旁路或强制接管接口；读接口不续期，控制权 TTL 与运动完成不能混为一谈。
+
+    仅复制上游对应接口的鉴权要求；未来接入 RCI 时必须单独遵循其在线协议，不可机械套用所有写接口均需 token 的假设。
+
+
+    响应规则：继承的业务失败可仍返回 HTTP 200，必须检查 success、code、message。
+
+    成功响应 schemas 来自在线 ROCOS API；双臂路由/鉴权失败通过新增 DualArmBusinessError 分支显式补全。
+
+    MoveJ 成功表示受理；用该臂 state/move_status 确认执行状态，并结合实际反馈检查到位。
+
+    仿真下使能期间关节可能漂移；重新使能后须等待 STOPPED 和反馈速度持续稳定再发 MoveJ。使能受理不表示物理反馈已稳定，立即下发曾触发核心 SpeedLimit 保护。
+
+    不要对超时的运动 POST 自动重试：请求可能已被受理，本版未引入幂等键。
+
+
+    运行边界：启动前校验两份配置，两个 Robot 均初始化成功后才开放 HTTP，默认下使能。
+
+    任一初始化失败则释放已创建资源并退出；运行中的单臂请求错误不会自动操作另一臂。
+
+    共享资源失效、应用退出属于共同故障；退出流程须停止接单、请求停止和下使能、等待线程结束后释放资源。
+
+    同一 ecat_id 只允许一个实际控制端；不得与现有单臂 App 同时控制主站 0/1。
+
+
+    第一版仅提供本文件 paths 列出的接口。组件中保留上游状态里的工具/RCI 字段，不表示已开放工具包、脚本、RCI、UDP 或 DDS 控制接口。
+
+
+    扩展版提供点动、MoveJ_IK/MoveL/MoveL_FK、模型下载、普通坐标系与负载管理。模型为共享只读资源；写请求仍按臂隔离。工具包、重命名、任意路径持久化、脚本、RCI/DDS、联合运动不在本版范围。
+
+
+
+    六点工具标定：双臂本地实现：支持普通工具和已配置工具包的六点标定。P1 固定工具包摘要及安装 revision，后续采点、计算、保存遇到变更或移除返回 4004 并清除旧解。保存仅接受 session_id，工具包局部
+    TCP=mount.Inverse()*result.pose；保留 mount、包版本、摘要与原包资源。原子保存到本臂 frames 文件，写入时间、robot_id、安装与误差等标定记录；不自动激活。成功后会话跟随新
+    revision；失败保留原注册表。每臂最多 16 个会话，绑定创建者 token，重启、淘汰或本臂成功 frames/load 后失效。读接口不续期。显式提交 pose/flange/joints
+    样本字段返回 1001。
+
+
+    本地日志扩展：/api/dualarm/logs 与 /api/dualarm/logs/stream 位于独立诊断服务 8082；原 /api/logs 告警格式保持不变。/api/logs/file/latest
+    返回当前进程文件快照，双臂模式文件行含 arm/ecat_id；轮转历史不在本接口范围。仅更新此本地 YAML，未发布在线 Apifox。'
+servers:
+- url: http://127.0.0.1:8080
+  description: 双臂 HTTP 默认地址；需先启动 MuJoCo 和 rocosDualArmMain
+tags:
+- name: 双臂实例
+  description: 实例枚举，不聚合运动命令
+- name: 按臂状态
+  description: 指定臂的状态、信息和运动查询
+- name: 按臂控制权
+  description: 每臂独立租约，复用上游 token/client_id 规则
+- name: 按臂基础控制
+  description: 指定臂的使能、下使能及复位
+- name: 按臂运动
+  description: 指定臂的 MoveJ 与运动生命周期
+- name: 按臂六点标定
+  description: 普通工具与已配置工具包 TCP，采集、计算、回读及明确保存
+- name: 日志与诊断
+security: []
+x-development-status: local-implementation
+x-derived-from:
+  authority: Apifox MCP project ROCOS API
+  title: ROCOS API
+  api_version: 3.0.0
+  download_time: '2026-11-17T14:26:39.434Z'
+  calibration_download_time: '2026-11-17T15:02:30.221Z'
+  note: 继承内容来自在线规范。新增 arm 路由、实例枚举、错误分支及生命周期由独立双臂入口实现；导入和发布后需重新核对在线版本。
+x-implementation-boundaries:
+  repository: rocos-app
+  branch: dualarm
+  build_option: ROCOS_BUILD_DUALARM
+  default_enabled: false
+  executable: rocosDualArmMain
+  core_link_target: rocos::robot
+  new_directory: dualarm/
+  single_arm_compatibility: 保留 rocosAppMain、src/rocosAppMain.cpp、原有 AppConfig/HTTP 服务和 /api/... 单臂路由；顶层
+    CMake 仅条件引入双臂子目录。
+  reuse_boundary: 复用 Robot C++ API 和运动核心；双臂自有薄 HTTP 适配层，不要求先重构 RobotHttpServer，不复制规划器或控制算法。 工具包标定新增只读
+    Robot::GetToolPackage 和受状态门闩保护的 SaveToolCalibration；原单臂 HTTP 不变。
+  configuration: 独立 DualArmConfig，arms.left/right.config 引用现有单臂 app 配置；复用 AppConfig::load/资源校验。只有顶层启动
+    HTTP、诊断和进程日志服务；子配置用于 Robot 及设备资源。 可选 workcell.urdf/asset_root 配置共用模型快照；此版本必须与两臂完整 URDF 一致。
+  config_checks:
+  - 两个 arm 均存在
+  - ecat_id 非负且不同
+  - 设备 ID 不同
+  - 模型/硬件/主站周期匹配
+  - 帧、负载、工具安装及快照的可写路径按臂隔离
+  - 两臂处于同一 MuJoCo 世界时关节绑定不重叠
+  - 顶层 HTTP 与诊断端口不同
+  scope_after_v1:
+  - 工具包导入/导出等管理
+  - 工具重命名
+  - 脚本
+  - RCI/UDP
+  - DDS
+  - 双臂同步与避碰
+x-routing-errors:
+  unknown_path:
+    http_status: 404
+    body:
+      success: false
+      code: 1001
+      message: Unknown dual-arm API path
+      data: null
+  invalid_arm:
+    http_status: 200
+    body:
+      success: false
+      code: 1001
+      message: arm must be left or right
+      data: null
+paths:
+  /api/arms:
+    get:
+      summary: 列出本进程管理的左右机械臂
+      operationId: dualarm_list_arms
+      tags:
+      - 双臂实例
+      security: []
+      x-implementation-status: implemented-local
+      description: 仅返回实例身份与路由信息；不获取控制权、不续期，不代表两臂当前均可运动。实时状态分别查询各臂 state。
+      responses:
+        '200':
+          description: 双臂实例清单
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArmsResponse'
+              example:
+                success: true
+                code: 0
+                message: ok
+                data:
+                  execution_mode: independent
+                  arms:
+                  - arm: left
+                    device_id: dualarm_sim_left
+                    ecat_id: 0
+                    joint_count: 7
+                    api_prefix: /api/arms/left
+                  - arm: right
+                    device_id: dualarm_sim_right
+                    ecat_id: 1
+                    joint_count: 7
+                    api_prefix: /api/arms/right
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+  /api/arms/{arm}/robot/state:
+    get:
+      summary: 指定臂：获取机器人完整状态快照
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+        返回目标臂的 RobotStateData；左右状态分别采样。保留上游 rci/tool 字段，仅表示状态格式兼容，不表示第一版提供对应控制接口。
+
+
+        继承的单臂契约：
+
+        包含 FSM 状态、关节数据、法兰位姿、实时 TCP、当前工具固定偏置、工件系及硬件摘要。tcp 为基座到当前 TCP，与 flange 使用同一关节采样并与活动工具使用同一注册表快照；无活动工具时
+        tcp=flange，FK/反馈无效时 tcp=null。flange 继续表示基座到法兰，active_tool_frame 继续表示法兰到工具的固定偏置。只读、不要求控制权、不续期。
+        active_tool_package 为当前工具包安装与模型元信息（普通工具为 null），模型使用 flange*mount，tcp 使用 flange*mount*局部tcp；三者来自同一注册表快照。
+
+
+        当前实现增加 data.rci，内容与 /api/robot/rci/status 的 data 一致。RCI 状态在处理请求时另行读取，其采样时刻可能与其余机器人状态快照存在差异。
+
+
+        robot_state 枚举新增 RCI。FSM 状态、control_active、motion_busy 和 rci 来自同一次受锁读取。RCI 待命 control_active=true、motion_busy=false、rci.control_active=false。关节反馈和周期伺服诊断沿用各自采样语义。'
+      tags:
+      - 按臂状态
+      parameters: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RobotStateData'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          rci:
+                            $ref: '#/components/schemas/RciStatusData'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_robot_state
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/state
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/info:
+    get:
+      summary: 指定臂：获取机器人与控制器信息
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+
+        继承的单臂契约：
+
+        读取软件、机器人模型、主站/ECM、从站清单和既有关节配置的信息基线。只读、无需控制权，不刷新控制权 TTL。连接/切换控制器时读取，可手动刷新，不作为高频状态流。
+
+
+        当前 App 固定返回 info_schema_version=2 及全部扩展键；未接入项为 null，分组 source=placeholder。slaves 由驱动配置生成，不是扫描结果；slaves_complete=false。旧
+        App 仅返回 joint_infos 时 Viz 仍可连接并提示扩展信息未提供。将来用真实采集值替换占位值时保持 key、类型、单位和来源语义不变。 v2 将 joint_infos.cnt_per_unit
+        更名为 pos_per_unit，增加 vel_per_unit 与 load_torque_per_unit，客户端需要迁移。'
+      tags:
+      - 按臂状态
+      parameters: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RobotInfoData'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_robot_info
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/info
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/enable:
+    post:
+      summary: 指定臂：使能机器人
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+        返回后通过该臂状态确认终态；不把重复请求一律视为成功，保留单臂状态机对非法状态的拒绝。
+
+
+        继承的单臂契约：
+
+        '
+      tags:
+      - 按臂基础控制
+      parameters: []
+      responses:
+        '200':
+          description: 使能成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/StandardResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                missingControl:
+                  summary: 未提供该臂控制权凭据
+                  value:
+                    success: false
+                    code: 3006
+                    message: Missing control credentials for selected arm
+                    data: null
+                wrongArmToken:
+                  summary: 错误、过期或属于另一臂的 token
+                  value:
+                    success: false
+                    code: 3007
+                    message: Invalid control credentials for selected arm
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_robot_enable
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/enable
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/disable:
+    post:
+      summary: 指定臂：下电 / 关闭使能
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+        返回后通过该臂状态确认终态；不把重复请求一律视为成功，保留单臂状态机对非法状态的拒绝。
+
+
+        继承的单臂契约：
+
+        需要 HTTP 控制权。RCI 待命可直接下使能，转入 IDLE 并关闭 RCI。活动 RCI 会话先进入 STOPPING，停止完成后 DISABLING → IDLE。停止或下使能失败进入
+        ERROR_STATE 并关闭 RCI。请求返回后通过状态查询确认终态。'
+      tags:
+      - 按臂基础控制
+      parameters: []
+      responses:
+        '200':
+          description: 下电成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/StandardResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                missingControl:
+                  summary: 未提供该臂控制权凭据
+                  value:
+                    success: false
+                    code: 3006
+                    message: Missing control credentials for selected arm
+                    data: null
+                wrongArmToken:
+                  summary: 错误、过期或属于另一臂的 token
+                  value:
+                    success: false
+                    code: 3007
+                    message: Invalid control credentials for selected arm
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_robot_disable
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/disable
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/reset:
+    post:
+      summary: 指定臂：清除机器人报警并按硬件使能状态复位
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+        返回后通过该臂状态确认终态；不把重复请求一律视为成功，保留单臂状态机对非法状态的拒绝。
+
+
+        继承的单臂契约：
+
+        仅用于 ERROR_STATE。ERROR_STATE → RESETTING，清除硬件故障后根据实际使能状态进入 STOPPED 或 IDLE，两者均为成功。复位失败保持 ERROR_STATE。复位后
+        RCI 保持关闭，需要用户重新开启。'
+      tags:
+      - 按臂基础控制
+      parameters: []
+      responses:
+        '200':
+          description: 复位结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          robot_state:
+                            type: string
+                            enum:
+                            - STOPPED
+                            - IDLE
+                            - ERROR_STATE
+                          enabled:
+                            type: boolean
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                missingControl:
+                  summary: 未提供该臂控制权凭据
+                  value:
+                    success: false
+                    code: 3006
+                    message: Missing control credentials for selected arm
+                    data: null
+                wrongArmToken:
+                  summary: 错误、过期或属于另一臂的 token
+                  value:
+                    success: false
+                    code: 3007
+                    message: Invalid control credentials for selected arm
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_robot_reset
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/reset
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/movej:
+    post:
+      summary: 指定臂：关节空间运动 (MoveJ)
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+        两臂同时调用 MoveJ 是两个独立任务；不保证共同启动或共同结束。成功响应不新增 task_id；使用 state/move_status 查询当前运动。
+
+
+        继承的单臂契约：
+
+
+
+        RCI 待命、RCI 伺服及关闭过程中拒绝竞争入口，返回状态冲突。退出 RCI 并取得有效 HTTP 控制权后才可再次执行。'
+      tags:
+      - 按臂运动
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - joints
+              properties:
+                joints:
+                  type: array
+                  description: 目标关节角度 [rad]，长度必须等于机器人关节数
+                  items:
+                    type: number
+                velocity:
+                  type: number
+                  default: 1
+                  description: 速度限制
+                acceleration:
+                  type: number
+                  default: 2
+                jerk:
+                  type: number
+                  default: 10
+            examples:
+              leftExample:
+                summary: left 路径下的 7 轴示例，单位 rad
+                value:
+                  joints:
+                  - 0.04
+                  - -0.03
+                  - 0.02
+                  - -0.04
+                  - 0.03
+                  - -0.02
+                  - 0.04
+                  velocity: 0.1
+                  acceleration: 0.3
+                  jerk: 5
+              rightExample:
+                summary: right 路径下的 7 轴示例，单位 rad
+                value:
+                  joints:
+                  - -0.03
+                  - 0.04
+                  - -0.04
+                  - 0.02
+                  - -0.02
+                  - 0.03
+                  - -0.04
+                  velocity: 0.1
+                  acceleration: 0.3
+                  jerk: 5
+        required: true
+      responses:
+        '200':
+          description: 运动请求已受理
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                missingControl:
+                  summary: 未提供该臂控制权凭据
+                  value:
+                    success: false
+                    code: 3006
+                    message: Missing control credentials for selected arm
+                    data: null
+                wrongArmToken:
+                  summary: 错误、过期或属于另一臂的 token
+                  value:
+                    success: false
+                    code: 3007
+                    message: Invalid control credentials for selected arm
+                    data: null
+                accepted:
+                  summary: 运动受理；不是到位确认
+                  value:
+                    success: true
+                    code: 0
+                    message: MoveJ accepted
+                    data:
+                      robot_state: RUNNING
+                      control_active: true
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_robot_movej
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/movej
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/pause:
+    post:
+      summary: 指定臂：暂停运动
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+        返回后通过该臂状态确认终态；不把重复请求一律视为成功，保留单臂状态机对非法状态的拒绝。
+
+
+        继承的单臂契约：
+
+        '
+      tags:
+      - 按臂运动
+      parameters: []
+      responses:
+        '200':
+          description: 暂停请求结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                missingControl:
+                  summary: 未提供该臂控制权凭据
+                  value:
+                    success: false
+                    code: 3006
+                    message: Missing control credentials for selected arm
+                    data: null
+                wrongArmToken:
+                  summary: 错误、过期或属于另一臂的 token
+                  value:
+                    success: false
+                    code: 3007
+                    message: Invalid control credentials for selected arm
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_robot_pause
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/pause
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/resume:
+    post:
+      summary: 指定臂：继续运动
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+        返回后通过该臂状态确认终态；不把重复请求一律视为成功，保留单臂状态机对非法状态的拒绝。
+
+
+        继承的单臂契约：
+
+        '
+      tags:
+      - 按臂运动
+      parameters: []
+      responses:
+        '200':
+          description: 继续请求结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                missingControl:
+                  summary: 未提供该臂控制权凭据
+                  value:
+                    success: false
+                    code: 3006
+                    message: Missing control credentials for selected arm
+                    data: null
+                wrongArmToken:
+                  summary: 错误、过期或属于另一臂的 token
+                  value:
+                    success: false
+                    code: 3007
+                    message: Invalid control credentials for selected arm
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_robot_resume
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/resume
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/stop:
+    post:
+      summary: 指定臂：停止运动
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+        返回后通过该臂状态确认终态；不把重复请求一律视为成功，保留单臂状态机对非法状态的拒绝。
+
+
+        继承的单臂契约：
+
+        '
+      tags:
+      - 按臂运动
+      parameters: []
+      responses:
+        '200':
+          description: 停止请求结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                missingControl:
+                  summary: 未提供该臂控制权凭据
+                  value:
+                    success: false
+                    code: 3006
+                    message: Missing control credentials for selected arm
+                    data: null
+                wrongArmToken:
+                  summary: 错误、过期或属于另一臂的 token
+                  value:
+                    success: false
+                    code: 3007
+                    message: Invalid control credentials for selected arm
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_robot_stop
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/stop
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/move_status:
+    get:
+      summary: 指定臂：查询运动/任务状态
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+
+        继承的单臂契约：
+
+        只读、不续期。RCI 待命 robot_state=RCI，control_active=true 表示位置保持控制循环仍运行。该字段不等同于存在运动或活动 RCI UDP 会话，后者查询
+        rci/status 的 control_active。'
+      tags:
+      - 按臂状态
+      parameters:
+      - name: task_id
+        in: query
+        description: ''
+        required: false
+        example: ''
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 返回机器人状态与任务信息
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MoveStatusData'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_robot_move_status
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/robot/move_status
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/control/acquire:
+    post:
+      summary: 指定臂：申请机器人控制权
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+
+        继承的单臂契约：
+
+        无持有者或原持有者已超时时颁发新 token。已有有效持有者时返回 3008。控制权绑定 token 和 client_id，不绑定 TCP 源端口。默认 TTL 300 秒，可由 http_control_ttl_seconds
+        配置；以响应 ttl_seconds 为准。持有者应按 heartbeat_interval_seconds 发送带两个鉴权头的心跳。普通 GET 不续期。'
+      tags:
+      - 按臂控制权
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                client_name:
+                  type: string
+                  description: 客户端自报名称，写入日志与 /status 供审计
+                client_id:
+                  type: string
+                  description: 稳定的客户端会话 ID；浏览器端口变化时可保持同一用户/会话持有 token
+            examples:
+              client:
+                summary: 同一客户端可分别申请左右臂
+                value:
+                  client_name: dualarm-client
+                  client_id: operator-session-001
+      responses:
+        '200':
+          description: 申请结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ControlOwnerData'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                acquired:
+                  summary: 该臂控制权已获取；token 仅为示例
+                  value:
+                    success: true
+                    code: 0
+                    message: control acquired
+                    data:
+                      token: example-token-issued-for-selected-arm
+                      client_id: operator-session-001
+                      client_id_auto: false
+                      has_owner: true
+                      ttl_seconds: 300
+                      heartbeat_interval_seconds: 5
+                occupied:
+                  summary: 该臂控制权已被占用
+                  value:
+                    success: false
+                    code: 3008
+                    message: control already held by another client
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_post_control_acquire
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/control/acquire
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/control/release:
+    post:
+      summary: 指定臂：释放机器人控制权
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+        释放控制权不等价于 Stop 或 Disable；结束本客户端运动应先显式停止/下使能并确认状态，再释放该臂控制权。
+
+
+        继承的单臂契约：
+
+        必须携带匹配当前持有者的 token 和 client_id。过期 token 不可释放新的控制权。'
+      tags:
+      - 按臂控制权
+      parameters: []
+      responses:
+        '200':
+          description: 释放结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/StandardResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                missingControl:
+                  summary: 未提供该臂控制权凭据
+                  value:
+                    success: false
+                    code: 3006
+                    message: Missing control credentials for selected arm
+                    data: null
+                wrongArmToken:
+                  summary: 错误、过期或属于另一臂的 token
+                  value:
+                    success: false
+                    code: 3007
+                    message: Invalid control credentials for selected arm
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_control_release
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/control/release
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/control/heartbeat:
+    post:
+      summary: 指定臂：持有者会话心跳
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+
+        继承的单臂契约：
+
+        校验 token、client_id 和有效期，成功后续期。默认建议每 5 秒发送；以响应 heartbeat_interval_seconds 为准。旧 token 过期或被接管后不可通过心跳恢复。调试旁路凭据不能用于心跳。此接口不改变机器人运动状态。'
+      tags:
+      - 按臂控制权
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {}
+      responses:
+        '200':
+          description: 心跳结果；业务失败仍可能返回 HTTP 200
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ControlOwnerData'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+                missingControl:
+                  summary: 未提供该臂控制权凭据
+                  value:
+                    success: false
+                    code: 3006
+                    message: Missing control credentials for selected arm
+                    data: null
+                wrongArmToken:
+                  summary: 错误、过期或属于另一臂的 token
+                  value:
+                    success: false
+                    code: 3007
+                    message: Invalid control credentials for selected arm
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_control_heartbeat
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/control/heartbeat
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/control/status:
+    get:
+      summary: 指定臂：查询控制权状态
+      deprecated: false
+      description: '双臂扩展（本地已实现）：本请求只作用于 URL 中指定的 arm，保持另一臂的控制权及运动状态。
+
+        同一臂的状态切换需串行保护；不同臂的请求不得因持有一个全局运动锁而相互等待。
+
+        成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
+
+
+        继承的单臂契约：
+
+        无需鉴权的只读查询。返回当前持有者和剩余 TTL，发现过期时清理控制权；即使携带持有者凭据也不会续期。'
+      tags:
+      - 按臂控制权
+      parameters: []
+      responses:
+        '200':
+          description: 状态快照
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ControlOwnerData'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              examples:
+                invalidArm:
+                  summary: 无效的臂标识；任何 Robot 均未被调用
+                  value:
+                    success: false
+                    code: 1001
+                    message: arm must be left or right
+                    data: null
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_control_status
+      x-implementation-status: implemented-local
+      x-upstream-path: /api/control/status
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/enabled:
+    get:
+      summary: 指定臂：查询使能状态
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 机器人状态与信息
+      parameters: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RobotEnabledData'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_enabled
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/tcp:
+    get:
+      summary: 指定臂：查询当前或指定工具的实时 TCP 位姿
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        返回基座到 TCP 的实时位姿：T_base_tcp = T_base_flange × T_flange_tool。name 省略/为空时使用当前激活工具；无活动工具时默认返回法兰位姿。指定工具只影响本次读取，不切换活动工具、不写文件、不执行运动。运动中也允许只读查询；GET
+        不要求控制凭据、不续期。名称非法返回 code=1001，工具不存在或资源不可用返回 -3001，FK/反馈无效返回 -2350；失败时 success=false、data=null，不伪造有效单位位姿。'
+      tags:
+      - 机器人状态与信息
+      parameters:
+      - name: name
+        in: query
+        description: 指定工具名，省略或空字符串使用当前工具；只读查询不会改变激活工具
+        required: false
+        example: tool1
+        schema:
+          type: string
+          maxLength: 64
+          pattern: ^[A-Za-z0-9_.-]*$
+      responses:
+        '200':
+          description: HTTP 200，检查 success 和 code；成功返回实时 TCP，失败 data 为 null
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        anyOf:
+                        - $ref: '#/components/schemas/TcpPoseData'
+                        - type: 'null'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_tcp
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/urdf:
+    get:
+      summary: 指定臂：获取机器人 URDF 模型 XML
+      deprecated: false
+      description: '返回共用工作站完整模型/资源，与 /api/workcell/ 对应入口相同；不要将两份完整模型叠放。需配置 workcell。未配置或资源不在清单中返回 JSON
+        404。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 机器人状态与信息
+      parameters: []
+      responses:
+        '200':
+          description: 返回 URDF XML 文本
+          content:
+            text/xml:
+              schema:
+                type: string
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+        '304':
+          description: If-None-Match 匹配内容版本，无响应体
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+        '404':
+          description: 未配置模型或资源不在模型清单内
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_urdf
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/urdf/mesh:
+    get:
+      summary: 指定臂：获取连杆 3D Mesh 文件 (STL)
+      deprecated: false
+      description: '返回共用工作站完整模型/资源，与 /api/workcell/ 对应入口相同；不要将两份完整模型叠放。需配置 workcell。未配置或资源不在清单中返回 JSON
+        404。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 机器人状态与信息
+      parameters:
+      - name: path
+        in: query
+        description: STL 文件相对路径，支持 package:// 格式
+        required: true
+        example: ''
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 二进制文件流
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+        '304':
+          description: If-None-Match 匹配内容版本，无响应体
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+        '404':
+          description: 未配置模型或资源不在模型清单内
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_urdf_mesh
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/movej_ik:
+    post:
+      summary: 指定臂：笛卡尔位姿逆解运动 (MoveJ_IK)
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 位姿采用完整 position.xyz、orientation.xyzw；零四元数无效，非零四元数归一化。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 空间运动控制 (Motion)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - pose
+              properties:
+                pose:
+                  $ref: '#/components/schemas/Pose'
+                velocity:
+                  type: number
+                  default: 1
+                acceleration:
+                  type: number
+                  default: 2
+                jerk:
+                  type: number
+                  default: 10
+        required: true
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_movej_ik
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/movel:
+    post:
+      summary: 指定臂：笛卡尔直线运动 (MoveL)
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 位姿采用完整 position.xyz、orientation.xyzw；零四元数无效，非零四元数归一化。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+
+
+        RCI 待命、RCI 伺服及关闭过程中拒绝竞争入口，返回状态冲突。退出 RCI 并取得有效 HTTP 控制权后才可再次执行。'
+      tags:
+      - 空间运动控制 (Motion)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - pose
+              properties:
+                pose:
+                  $ref: '#/components/schemas/Pose'
+                tool_name:
+                  type: string
+                  description: 可选，指定使用的工具坐标系名称
+                velocity:
+                  type: number
+                  default: 1
+                acceleration:
+                  type: number
+                  default: 2
+                jerk:
+                  type: number
+                  default: 10
+        required: true
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_movel
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/movel_fk:
+    post:
+      summary: 指定臂：关节空间直线运动 (MoveL_FK)
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 空间运动控制 (Motion)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - joints
+              properties:
+                joints:
+                  type: array
+                  description: 目标关节角度 [rad]
+                  items:
+                    type: number
+                tool_name:
+                  type: string
+                  description: 可选，指定使用的工具坐标系名称
+                velocity:
+                  type: number
+                  default: 1
+                acceleration:
+                  type: number
+                  default: 2
+                jerk:
+                  type: number
+                  default: 10
+        required: true
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_movel_fk
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/jog/joint:
+    post:
+      summary: 指定臂：关节点动
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 点动沿用核心超时；客户端串行续发，松开/失焦后停止续发并发送本臂
+        jog/stop。本版无点动会话 ID，不支持任意乱序续发。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        传入与关节数等长的方向向量，每个元素为该关节的速度方向'
+      tags:
+      - 点动控制 (Jogging)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - joints
+              properties:
+                joints:
+                  type: array
+                  description: 关节方向向量，长度等于机器人关节数
+                  items:
+                    type: number
+                direction:
+                  type: string
+                  enum:
+                  - POSITIVE
+                  - NEGATIVE
+                  default: POSITIVE
+                  description: 向量整体缩放符号（乘到每个元素上）
+                speed:
+                  type: number
+                  default: 1
+                timeout:
+                  type: number
+                  default: 0.1
+                dir_threshold:
+                  type: number
+                  default: 0.99
+        required: true
+      responses:
+        '200':
+          description: 点动请求结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_jog_joint
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/jog/cartesian:
+    post:
+      summary: 指定臂：笛卡尔点动
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 点动沿用核心超时；客户端串行续发，松开/失焦后停止续发并发送本臂
+        jog/stop。本版无点动会话 ID，不支持任意乱序续发。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        传入 6 维 twist 向量 [vx, vy, vz, wx, wy, wz]，前 3 个为线速度，后 3 个为角速度。 可通过 frame 参数指定参考坐标系；Robot 层会将 FLANGE/TOOL/OBJECT
+        下的 twist 旋转到 BASE 后执行。
+
+        '
+      tags:
+      - 点动控制 (Jogging)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - twist
+              properties:
+                twist:
+                  type: array
+                  description: 6 维 twist [vx, vy, vz, wx, wy, wz]
+                  minItems: 6
+                  maxItems: 6
+                  items:
+                    type: number
+                frame:
+                  type: string
+                  enum:
+                  - BASE
+                  - FLANGE
+                  - TOOL
+                  - OBJECT
+                  default: BASE
+                  description: '点动参考坐标系。BASE 表示 twist 已经在基坐标系表达； FLANGE 表示 twist 在当前法兰坐标系表达； TOOL 表示 twist
+                    在当前激活工具坐标系表达； OBJECT 表示 twist 在当前激活工件坐标系表达。
+
+                    '
+                direction:
+                  type: string
+                  enum:
+                  - POSITIVE
+                  - NEGATIVE
+                  default: POSITIVE
+                speed:
+                  type: number
+                  default: 1
+                timeout:
+                  type: number
+                  default: 0.1
+                dir_threshold:
+                  type: number
+                  default: 0.99
+        required: true
+      responses:
+        '200':
+          description: 点动请求结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_jog_cartesian
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/jog/nullspace:
+    post:
+      summary: 指定臂：零空间点动
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 点动沿用核心超时；客户端串行续发，松开/失焦后停止续发并发送本臂
+        jog/stop。本版无点动会话 ID，不支持任意乱序续发。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        传入与关节数等长的方向向量，在不影响末端位姿的零空间内运动'
+      tags:
+      - 点动控制 (Jogging)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - joints
+              properties:
+                joints:
+                  type: array
+                  description: 关节方向向量，长度等于机器人关节数
+                  items:
+                    type: number
+                direction:
+                  type: string
+                  enum:
+                  - POSITIVE
+                  - NEGATIVE
+                  default: POSITIVE
+                speed:
+                  type: number
+                  default: 1
+                timeout:
+                  type: number
+                  default: 0.1
+                dir_threshold:
+                  type: number
+                  default: 0.99
+        required: true
+      responses:
+        '200':
+          description: 点动请求结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_jog_nullspace
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/jog/svd:
+    post:
+      summary: 指定臂：SVD 维度速度点动
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 点动沿用核心超时；客户端串行续发，松开/失焦后停止续发并发送本臂
+        jog/stop。本版无点动会话 ID，不支持任意乱序续发。 dim_speeds 长度严格等于本臂关节数减 6，7 轴时为 1。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        传入各维度的速度标量数组'
+      tags:
+      - 点动控制 (Jogging)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - dim_speeds
+              properties:
+                dim_speeds:
+                  type: array
+                  description: 各维度速度标量
+                  items:
+                    type: number
+                timeout:
+                  type: number
+                  default: 0.1
+                dir_threshold:
+                  type: number
+                  default: 0.99
+        required: true
+      responses:
+        '200':
+          description: 点动请求结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_jog_svd
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/jog/stop:
+    post:
+      summary: 指定臂：停止点动
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 点动沿用核心超时；客户端串行续发，松开/失焦后停止续发并发送本臂
+        jog/stop。本版无点动会话 ID，不支持任意乱序续发。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 点动控制 (Jogging)
+      parameters: []
+      responses:
+        '200':
+          description: 停止成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_jog_stop
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/tool_frames:
+    get:
+      summary: 指定臂：获取所有工具坐标系名称列表
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 package_support=false；不承诺工具包管理能力。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        返回真实工具名称、当前激活名称及默认持久化文件路径。只读，不要求控制权。 新增 package_support=true 与 robot_id，names 同时包含普通工具和包工具。'
+      tags:
+      - 坐标系管理 (Frame)
+      parameters: []
+      responses:
+        '200':
+          description: HTTP 200，检查 success/code；失败时 data 可为空
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ToolRegistryListData'
+                    required:
+                    - data
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_tool_frames
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/object_frames:
+    get:
+      summary: 指定臂：获取所有工件坐标系名称列表
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 坐标系管理 (Frame)
+      parameters: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FrameNameList'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_object_frames
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/tool_frame:
+    post:
+      summary: 指定臂：设置/新增工具坐标系
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 写操作仅 IDLE/STOPPED 可用，其他状态 4005。普通工具支持
+        persist；工具 previous_name 不支持更名（不同于 name 时 1001）；不开放工具包管理。 位姿采用完整 position.xyz、orientation.xyzw；零四元数无效，非零四元数归一化。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        写操作需要 X-Rocos-Control-Token 与 X-Rocos-Client-Id 同时存在，且状态为 IDLE/STOPPED；检查、文件提交与生效同运动启动互斥。code=1001
+        参数无效，4005 状态不允许；其他文件和注册表错误沿用 Result 错误码。 frame 为法兰到 TCP 的变换（m、四元数 xyzw）；未传 persist 只改内存。 包工具禁止使用此接口编辑/重命名，以免把合成位姿误写为局部
+        TCP；使用 /api/robot/tool_package/overrides。'
+      tags:
+      - 坐标系管理 (Frame)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.-]{1,64}$
+                  description: 工具名称，ASCII 字母、数字、下划线、点或短横，1–64 字符
+                frame:
+                  $ref: '#/components/schemas/Pose'
+                pose:
+                  $ref: '#/components/schemas/Pose'
+                  description: frame 的兼容别名
+                persist:
+                  type: boolean
+                  default: false
+                  description: true 时先原子保存到 robot.frames 再发布；文件失败保留原文件和内存
+                previous_name:
+                  type: string
+                  description: 可选：编辑/重命名的原名称。原名称必须存在；新名称不能与其他工具重名。重命名同步更新活动选择。
+              required:
+              - name
+              anyOf:
+              - required:
+                - frame
+              - required:
+                - pose
+        required: true
+      responses:
+        '200':
+          description: HTTP 200，检查 success/code；失败时 data 可为空
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ToolRegistryWriteData'
+                    required:
+                    - data
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_tool_frame
+      x-implementation-status: implemented-local
+    get:
+      summary: 指定臂：查询指定工具坐标系
+      deprecated: false
+      description: "双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。\n\n上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：\n\
+        \ 包工具额外返回 package；frame 始终为合成后的法兰到 TCP。\n已配置工具包返回 package，其中含局部 tcp、mount、revision 和 calibration_yaml，可回读六点标定保存结果。"
+      tags:
+      - 坐标系管理 (Frame)
+      parameters:
+      - name: name
+        in: query
+        description: ''
+        required: true
+        example: ''
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 成功或未找到
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/NamedFrame'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_tool_frame
+      x-implementation-status: implemented-local
+    delete:
+      summary: 指定臂：删除指定工具坐标系
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 写操作仅 IDLE/STOPPED 可用，其他状态 4005。普通工具支持
+        persist；工具 previous_name 不支持更名（不同于 name 时 1001）；不开放工具包管理。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        写操作需要 X-Rocos-Control-Token 与 X-Rocos-Client-Id 同时存在，且状态为 IDLE/STOPPED；检查、文件提交与生效同运动启动互斥。code=1001
+        参数无效，4005 状态不允许；其他文件和注册表错误沿用 Result 错误码。 删除活动工具时回到法兰；persist 查询参数只接受 true/false。 删除包工具只解除本机绑定与活动选择，保留不可变资源文件。'
+      tags:
+      - 坐标系管理 (Frame)
+      parameters:
+      - name: name
+        in: query
+        description: ''
+        required: true
+        example: ''
+        schema:
+          type: string
+      - name: persist
+        in: query
+        description: ''
+        required: false
+        example: ''
+        schema:
+          type: boolean
+          default: false
+          description: true 时先原子保存到 robot.frames 再发布；文件失败保留原文件和内存
+      responses:
+        '200':
+          description: HTTP 200，检查 success/code；失败时 data 可为空
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ToolRegistrySelectionData'
+                    required:
+                    - data
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_delete_tool_frame
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/object_frame:
+    get:
+      summary: 指定臂：查询指定工件坐标系
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 坐标系管理 (Frame)
+      parameters:
+      - name: name
+        in: query
+        description: ''
+        required: true
+        example: ''
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 成功或未找到
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/NamedFrame'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_object_frame
+      x-implementation-status: implemented-local
+    post:
+      summary: 指定臂：设置/新增工件坐标系
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 写操作仅 IDLE/STOPPED 可用，其他状态 4005。普通工具支持
+        persist；工具 previous_name 不支持更名（不同于 name 时 1001）；不开放工具包管理。 位姿采用完整 position.xyz、orientation.xyzw；零四元数无效，非零四元数归一化。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 坐标系管理 (Frame)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - name
+              - frame
+              properties:
+                name:
+                  type: string
+                frame:
+                  $ref: '#/components/schemas/Pose'
+                pose:
+                  $ref: '#/components/schemas/Pose'
+        required: true
+      responses:
+        '200':
+          description: 操作结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/NamedFrame'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_object_frame
+      x-implementation-status: implemented-local
+    delete:
+      summary: 指定臂：删除指定工件坐标系
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 写操作仅 IDLE/STOPPED 可用，其他状态 4005。普通工具支持
+        persist；工具 previous_name 不支持更名（不同于 name 时 1001）；不开放工具包管理。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 坐标系管理 (Frame)
+      parameters:
+      - name: name
+        in: query
+        description: ''
+        required: true
+        example: ''
+        schema:
+          type: string
+      responses:
+        '200':
+          description: 操作结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/StandardResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_delete_object_frame
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/active_tool_frame:
+    post:
+      summary: 指定臂：激活指定工具坐标系
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 写操作仅 IDLE/STOPPED 可用，其他状态 4005。普通工具支持
+        persist；工具 previous_name 不支持更名（不同于 name 时 1001）；不开放工具包管理。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        写操作需要 X-Rocos-Control-Token 与 X-Rocos-Client-Id 同时存在，且状态为 IDLE/STOPPED；检查、文件提交与生效同运动启动互斥。code=1001
+        参数无效，4005 状态不允许；其他文件和注册表错误沿用 Result 错误码。 不自动切换全局负载参数。'
+      tags:
+      - 坐标系管理 (Frame)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: 已存在工具名称；空字符串清空活动工具并使用法兰
+                persist:
+                  type: boolean
+                  default: false
+                  description: true 时先原子保存到 robot.frames 再发布；文件失败保留原文件和内存
+              required:
+              - name
+        required: true
+      responses:
+        '200':
+          description: HTTP 200，检查 success/code；失败时 data 可为空
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ToolRegistrySelectionData'
+                    required:
+                    - data
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_active_tool_frame
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/active_object_frame:
+    post:
+      summary: 指定臂：激活指定工件坐标系
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 写操作仅 IDLE/STOPPED 可用，其他状态 4005。普通工具支持
+        persist；工具 previous_name 不支持更名（不同于 name 时 1001）；不开放工具包管理。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 坐标系管理 (Frame)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - name
+              properties:
+                name:
+                  type: string
+        required: true
+      responses:
+        '200':
+          description: 操作结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/StandardResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_active_object_frame
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/frames/load:
+    post:
+      summary: 指定臂：从 YAML 文件加载坐标系
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 双臂适配差异：仅 IDLE/STOPPED 可写，否则 4005；path
+        仅允许为空或本臂默认配置路径，其他路径 1001。非法 JSON/path 严格拒绝，不静默回退。 写操作仅 IDLE/STOPPED 可用，其他状态 4005。普通工具支持 persist；工具
+        previous_name 不支持更名（不同于 name 时 1001）；不开放工具包管理。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        写操作需要 X-Rocos-Control-Token 与 X-Rocos-Client-Id 同时存在，且状态为 IDLE/STOPPED；检查、文件提交与生效同运动启动互斥。code=1001
+        参数无效，4005 状态不允许；其他文件和注册表错误沿用 Result 错误码。 工具、工件和活动选择一并处理。load 在完整验证后替换内存；save 采用同目录临时文件与原子替换。 新格式
+        package_tools 保存工具包摘要/版本、本机安装与局部 TCP、revision及标定记录，和普通工具/活动选择原子提交。模型资源不在 YAML 内，恢复需要工具库内相同摘要快照。'
+      tags:
+      - 坐标系管理 (Frame)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path:
+                  type: string
+                  description: 控制器上的 YAML 路径；省略或空字符串使用 robot.frames，显式路径不改变默认配置
+      responses:
+        '200':
+          description: 加载结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FramesSnapshot'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_frames_load
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/frames/save:
+    post:
+      summary: 指定臂：保存坐标系到 YAML 文件
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 双臂适配差异：仅 IDLE/STOPPED 可写，否则 4005；path
+        仅允许为空或本臂默认配置路径，其他路径 1001。非法 JSON/path 严格拒绝，不静默回退。 写操作仅 IDLE/STOPPED 可用，其他状态 4005。普通工具支持 persist；工具
+        previous_name 不支持更名（不同于 name 时 1001）；不开放工具包管理。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        写操作需要 X-Rocos-Control-Token 与 X-Rocos-Client-Id 同时存在，且状态为 IDLE/STOPPED；检查、文件提交与生效同运动启动互斥。code=1001
+        参数无效，4005 状态不允许；其他文件和注册表错误沿用 Result 错误码。 工具、工件和活动选择一并处理。load 在完整验证后替换内存；save 采用同目录临时文件与原子替换。 新格式
+        package_tools 保存工具包摘要/版本、本机安装与局部 TCP、revision及标定记录，和普通工具/活动选择原子提交。模型资源不在 YAML 内，恢复需要工具库内相同摘要快照。'
+      tags:
+      - 坐标系管理 (Frame)
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path:
+                  type: string
+                  description: 控制器上的 YAML 路径；省略或空字符串使用 robot.frames，显式路径不改变默认配置
+      responses:
+        '200':
+          description: 保存结果
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - allOf:
+                  - $ref: '#/components/schemas/StandardResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FramesSnapshot'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_frames_save
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/load_params:
+    get:
+      summary: 指定臂：获取当前负载参数
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        控制服务接口，默认端口 8080。质量单位 kg，质心单位 m，质心在法兰坐标系表达。
+
+
+        无需控制权；只读请求不续期。返回 valid、mass 和 com。valid=false 表示尚无有效参数，不能仅凭数值判断辨识已完成。读取当前内存参数，不读取指定文件。'
+      tags:
+      - 负载参数
+      parameters: []
+      responses:
+        '200':
+          description: 当前负载参数。
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/LoadParametersResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              example:
+                success: true
+                code: 0
+                message: ok
+                data:
+                  valid: true
+                  mass: 2.5
+                  com:
+                  - 0
+                  - 0
+                  - 0.08
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_get_load_params
+      x-implementation-status: implemented-local
+    post:
+      summary: 指定臂：设置当前负载参数
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 双臂适配差异：仅 IDLE/STOPPED 可写，否则 4005；path
+        仅允许为空或本臂默认配置路径，其他路径 1001。非法 JSON/path 严格拒绝，不静默回退。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        控制服务接口，默认端口 8080。质量单位 kg，质心单位 m，质心在法兰坐标系表达。
+
+
+        必须同时携带 `X-Rocos-Control-Token` 和与持有者匹配的 `X-Rocos-Client-Id`（AND）。缺令牌返回业务码 3006；错误、过期或客户端身份不匹配返回
+        3007。通过鉴权的请求续期。业务失败仍以 HTTP 200 返回，请检查 success/code；不会以 HTTP 401 替代该约定。
+
+
+        mass 必填，有限且非负；mass=0 表示无负载。com 可选，默认 [0,0,0]，必须恰好 3 个有限数值。设置后 valid=true，仅更新内存；需要持久化时另调 POST /api/robot/load_params/save。
+
+
+        参数类型/形状或 JSON 不合法：业务码 1001；负质量或非有限值：-2902（ParameterNanOrInf）；成功为 0。'
+      tags:
+      - 负载参数
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                mass:
+                  type: number
+                  minimum: 0
+                  description: 负载质量，单位 kg，必须有限；0 表示无负载。
+                com:
+                  type: array
+                  minItems: 3
+                  maxItems: 3
+                  items:
+                    type: number
+                  description: 法兰坐标系下的质心 [x,y,z]，单位 m，各分量必须有限。
+                  default:
+                  - 0
+                  - 0
+                  - 0
+              required:
+              - mass
+            example:
+              mass: 2.5
+              com:
+              - 0
+              - 0
+              - 0.08
+        required: true
+      responses:
+        '200':
+          description: 成功或业务错误（包括控制权拒绝），均为 HTTP 200。
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/SetLoadParametersResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              example:
+                success: true
+                code: 0
+                message: Load parameters set
+                data:
+                  mass: 2.5
+                  com:
+                  - 0
+                  - 0
+                  - 0.08
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_load_params
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/robot/load_params/save:
+    post:
+      summary: 指定臂：将当前负载参数保存为 YAML 文件
+      deprecated: false
+      description: '双臂本地扩展，只操作指定臂；写操作必须携带该臂 token 与 client_id。只读不续期。 双臂适配差异：仅 IDLE/STOPPED 可写，否则 4005；path
+        仅允许为空或本臂默认配置路径，其他路径 1001。非法 JSON/path 严格拒绝，不静默回退。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        控制服务接口，默认端口 8080。质量单位 kg，质心单位 m，质心在法兰坐标系表达。
+
+
+        必须同时携带 `X-Rocos-Control-Token` 和与持有者匹配的 `X-Rocos-Client-Id`（AND）。缺令牌返回业务码 3006；错误、过期或客户端身份不匹配返回
+        3007。通过鉴权的请求续期。业务失败仍以 HTTP 200 返回，请检查 success/code；不会以 HTTP 401 替代该约定。
+
+
+        将当前已设置或已辨识的负载参数写入控制器端 YAML，保存 mass 与 com。path 可选，省略或为空时使用启动配置 robot.payload 对应的默认路径，响应 data.path
+        为实际路径。路径属于控制器文件系统。空请求体可使用默认路径；当前实现对非法 JSON 或非字符串 path 也回退默认路径，而非返回参数错误。
+
+
+        没有有效参数、不能打开目标文件或写入失败时业务码 -3001（ResourceUnavailable）；成功为 0。调用不会自动创建缺失的父目录。'
+      tags:
+      - 负载参数
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path:
+                  type: string
+                  description: 控制器端目标 YAML 路径；省略/空串使用启动配置的默认负载文件。
+            example: {}
+      responses:
+        '200':
+          description: 成功或业务错误，均为 HTTP 200。
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/SaveLoadParametersResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+              example:
+                success: true
+                code: 0
+                message: Load parameters saved
+                data:
+                  path: /path/to/config/payload.yaml
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualarm_post_load_params_save
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/workcell/urdf:
+    get:
+      summary: 下载完整双臂 URDF
+      deprecated: false
+      description: '返回共用工作站完整模型/资源，与 /api/workcell/ 对应入口相同；不要将两份完整模型叠放。需配置 workcell。未配置或资源不在清单中返回 JSON
+        404。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 机器人状态与信息
+      parameters:
+      - name: If-None-Match
+        in: header
+        schema:
+          type: string
+        required: false
+      responses:
+        '200':
+          description: 返回 URDF XML 文本
+          content:
+            text/xml:
+              schema:
+                type: string
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+        '304':
+          description: If-None-Match 匹配内容版本，无响应体
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+        '404':
+          description: 未配置模型或资源不在模型清单内
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_workcell_urdf
+      x-implementation-status: implemented-local
+  /api/workcell/urdf/mesh:
+    get:
+      summary: 下载模型引用的资源
+      deprecated: false
+      description: '返回共用工作站完整模型/资源，与 /api/workcell/ 对应入口相同；不要将两份完整模型叠放。需配置 workcell。未配置或资源不在清单中返回 JSON
+        404。
+
+
+        上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
+
+        '
+      tags:
+      - 机器人状态与信息
+      parameters:
+      - name: path
+        in: query
+        description: STL 文件相对路径，支持 package:// 格式
+        required: true
+        example: ''
+        schema:
+          type: string
+      - name: If-None-Match
+        in: header
+        schema:
+          type: string
+        required: false
+      responses:
+        '200':
+          description: 二进制文件流
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+        '304':
+          description: If-None-Match 匹配内容版本，无响应体
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+        '404':
+          description: 未配置模型或资源不在模型清单内
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualarm_workcell_urdf_mesh
+      x-implementation-status: implemented-local
+  /api/workcell/model:
+    get:
+      summary: 获取双臂工作站模型清单
+      operationId: dualarm_workcell_model
+      security: []
+      description: 配置 workcell 时提供启动时不可变模型快照。两臂使用相同完整 URDF，各自 base/tip 决定运动链。资源只能按清单原始 path 下载；允许 URDF
+        引用的 ../meshes，但规范化后必须位于 asset_root。单文件最多 64 MiB，总计 256 MiB。修改磁盘模型需重启控制器。
+      responses:
+        '200':
+          description: 模型清单
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/StandardResponse'
+                - type: object
+                  properties:
+                    data:
+                      $ref: '#/components/schemas/WorkcellModel'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+        '404':
+          description: 未配置模型
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+  /api/arms/{arm}/calibration/pose:
+    post:
+      summary: 指定臂：采集六点法标定的真实法兰位姿
+      deprecated: false
+      description: '双臂本地实现：支持普通工具和已配置工具包的六点标定。P1 固定工具包摘要及安装 revision，后续采点、计算、保存遇到变更或移除返回 4004 并清除旧解。保存仅接受
+        session_id，工具包局部 TCP=mount.Inverse()*result.pose；保留 mount、包版本、摘要与原包资源。原子保存到本臂 frames 文件，写入时间、robot_id、安装与误差等标定记录；不自动激活。成功后会话跟随新
+        revision；失败保留原注册表。每臂最多 16 个会话，绑定创建者 token，重启、淘汰或本臂成功 frames/load 后失效。读接口不续期。显式提交 pose/flange/joints
+        样本字段返回 1001。
+
+
+        上游契约：
+
+        写操作需要 X-Rocos-Control-Token 与 X-Rocos-Client-Id 同时存在，且状态为 IDLE/STOPPED；检查、文件提交与生效同运动启动互斥。code=1001
+        参数无效，4005 状态不允许；其他文件和注册表错误沿用 Result 错误码。 仅从控制器采集静止时的真实关节/FK，不接受请求提供的 pose。P1–P4 为同一固定 TCP 的四种法兰姿态；P4
+        是方向原点，保持 P4 方向沿期望工具 +X/+Z 移动后分别采集 P5/P6。重采集任何点立即清空 result。会话绑定创建者令牌、内存保留最多 16 个，重启失效；新会话首点必须 P1（4001），名称/索引无效
+        1001，失效或其他令牌会话 4004，不能采集静止位姿 4005。 包工具会话固定摘要与安装 revision，变更后返回 4004，须重启采集；保存包工具必须使用 POST /api/calibration/save，由服务端反算局部
+        TCP。'
+      tags:
+      - 按臂六点标定
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.-]{1,64}$
+                  description: 工具名称，ASCII 字母、数字、下划线、点或短横，1–64 字符
+                index:
+                  type: integer
+                  minimum: 1
+                  maximum: 6
+                session_id:
+                  type: string
+                  description: 首次 P1 省略以新建会话，其余点/重采集携带返回 ID
+              required:
+              - name
+              - index
+        required: true
+      responses:
+        '200':
+          description: HTTP 200，检查 success/code；失败时 data 可为空
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/SixPointCalibrationResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualArmCalibrationPose
+      x-upstream-path: /api/calibration/pose
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/calibration/run:
+    post:
+      summary: 指定臂：计算六点法工具坐标系（不自动保存或激活）
+      deprecated: false
+      description: '双臂本地实现：支持普通工具和已配置工具包的六点标定。P1 固定工具包摘要及安装 revision，后续采点、计算、保存遇到变更或移除返回 4004 并清除旧解。保存仅接受
+        session_id，工具包局部 TCP=mount.Inverse()*result.pose；保留 mount、包版本、摘要与原包资源。原子保存到本臂 frames 文件，写入时间、robot_id、安装与误差等标定记录；不自动激活。成功后会话跟随新
+        revision；失败保留原注册表。每臂最多 16 个会话，绑定创建者 token，重启、淘汰或本臂成功 frames/load 后失效。读接口不续期。显式提交 pose/flange/joints
+        样本字段返回 1001。
+
+
+        上游契约：
+
+        写操作需要 X-Rocos-Control-Token 与 X-Rocos-Client-Id 同时存在，且状态为 IDLE/STOPPED；检查、文件提交与生效同运动启动互斥。code=1001
+        参数无效，4005 状态不允许；其他文件和注册表错误沿用 Result 错误码。 要求创建者令牌和完整六点（4001）。固定枢轴 SVD 求 TCP，拒绝秩亏/病态姿态和超限残差（4002）。P5/P6
+        方向相对 P4 不超过 1°，位移至少 1 mm，X/Z 夹角正弦至少 sin(10°)。X=P5−P4，以 P6−P4 确定 XZ 平面，叉积构造右手正交工具系。返回法兰到 TCP 的
+        pose 和残差/条件数；计算不创建、不保存也不激活工具，应另行 POST tool_frame persist=true 并明确激活。每次计算前清空旧 result，失败后不会保留旧解；会话失效/归属错误
+        4004。 包工具会话固定摘要与安装 revision，变更后返回 4004，须重启采集；保存包工具必须使用 POST /api/calibration/save，由服务端反算局部 TCP。'
+      tags:
+      - 按臂六点标定
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session_id:
+                  type: string
+                max_error:
+                  type: number
+                  exclusiveMinimum: 0
+                  maximum: 0.05
+                  default: 0.001
+                  description: P1–P4 固定参考点最大残差阈值，m
+                  minimum: 0
+              required:
+              - session_id
+        required: true
+      responses:
+        '200':
+          description: HTTP 200，检查 success/code；失败时 data 可为空
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/SixPointCalibrationResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualArmCalibrationRun
+      x-upstream-path: /api/calibration/run
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/calibration/result:
+    get:
+      summary: 指定臂：查询六点法标定会话及结果
+      deprecated: false
+      description: '双臂本地实现：支持普通工具和已配置工具包的六点标定。P1 固定工具包摘要及安装 revision，后续采点、计算、保存遇到变更或移除返回 4004 并清除旧解。保存仅接受
+        session_id，工具包局部 TCP=mount.Inverse()*result.pose；保留 mount、包版本、摘要与原包资源。原子保存到本臂 frames 文件，写入时间、robot_id、安装与误差等标定记录；不自动激活。成功后会话跟随新
+        revision；失败保留原注册表。每臂最多 16 个会话，绑定创建者 token，重启、淘汰或本臂成功 frames/load 后失效。读接口不续期。显式提交 pose/flange/joints
+        样本字段返回 1001。
+
+
+        上游契约：
+
+        只读查询，不需要控制权。返回六个槽位的样本、数量和可空结果；缺少 ID 返回 1001，会话失效/重启/被淘汰返回 4004。应在页面重新进入时回读。不能用旧控制令牌的本地草稿恢复新控制会话；采集和计算仍要求创建者令牌。
+        返回采集时固定的 package_digest/package_revision。'
+      tags:
+      - 按臂六点标定
+      parameters:
+      - name: session_id
+        in: query
+        description: ''
+        required: true
+        example: ''
+        schema:
+          type: string
+      responses:
+        '200':
+          description: HTTP 200，检查 success/code；失败时 data 可为空
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/SixPointCalibrationResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security: []
+      operationId: dualArmCalibrationResult
+      x-upstream-path: /api/calibration/result
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/arms/{arm}/calibration/save:
+    post:
+      summary: 指定臂：保存服务端六点标定结果
+      deprecated: false
+      description: '双臂本地实现：支持普通工具和已配置工具包的六点标定。P1 固定工具包摘要及安装 revision，后续采点、计算、保存遇到变更或移除返回 4004 并清除旧解。保存仅接受
+        session_id，工具包局部 TCP=mount.Inverse()*result.pose；保留 mount、包版本、摘要与原包资源。原子保存到本臂 frames 文件，写入时间、robot_id、安装与误差等标定记录；不自动激活。成功后会话跟随新
+        revision；失败保留原注册表。每臂最多 16 个会话，绑定创建者 token，重启、淘汰或本臂成功 frames/load 后失效。读接口不续期。显式提交 pose/flange/joints
+        样本字段返回 1001。
+
+
+        上游契约：
+
+        写操作要求 X-Rocos-Control-Token 和 X-Rocos-Client-Id 同时存在，状态为 IDLE/STOPPED；成功写入原子保存到 robot.frames 后发布。1001
+        参数/上下文无效，3006 缺凭据，3007 凭据无效，4005 状态不允许，文件错误 -3001。session_id 必须属于当前控制令牌、已成功计算且工具包摘要/安装 revision
+        与采集上下文一致。包工具保存 C=mount^-1*result.pose 及时间/误差等记录，普通工具保存原法兰到 TCP；不自动激活。4001 尚未计算，4004 会话失效/安装变更。'
+      tags:
+      - 按臂六点标定
+      parameters: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                session_id:
+                  type: string
+              required:
+              - session_id
+              additionalProperties: false
+        required: true
+      responses:
+        '200':
+          description: HTTP 200，检查 success/code；文件端点失败时返回标准 JSON
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/StandardResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
+          headers:
+            X-Rocos-Request-Id:
+              description: 本次双臂 HTTP 请求标识。操作事件可用它定位；不是异步运动 task_id。
+              schema:
+                type: string
+      security:
+      - ControlToken: []
+        ClientId: []
+      operationId: dualArmCalibrationSave
+      x-upstream-path: /api/calibration/save
+      x-implementation-status: implemented-local
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+  /api/logs:
+    get:
+      summary: 查询控制器最近的警告与错误日志
+      deprecated: false
+      description: '独立诊断服务，默认 `http://控制器地址:8082`，端口由启动配置 `diagnostics.port` 指定。无需控制权或身份头，不会续期控制权。支持跨域
+        GET/OPTIONS；开发时应将 `/api/logs` 及其子路径代理到诊断端口。
+
+
+        查询当前 App 进程的内存缓存，只包含 warn/error/critical，不读取磁盘文件，普通 info 请使用最新文件接口。缓存上限为 4096 帧或约 16 MiB，先到者触发淘汰；重启后旧进程记录不保留。
+
+
+        不传 after 时取最近 limit 条，按旧到新返回；传 after 时返回该游标之后的记录。limit 默认 100，范围 1–500。has_more=true 时可继续以 next_id
+        分页；随后用 next_id 订阅实时流，客户端按 id 去重。旧会话游标会返回 gap.reason=server_restarted；缓存覆盖为 buffer_overrun；生产队列丢失为
+        producer_overflow。游标格式错误、超过 128 字符、同会话游标超前、limit 非整数或越界均为 HTTP 400。'
+      tags:
+      - 日志与诊断
+      parameters:
+      - name: after
+        in: query
+        description: 不透明游标 session:sequence；使用上次返回的 next_id 或 SSE id，不要自行拼接。
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^([A-Za-z0-9-]+:[0-9]+)?$
+          description: 不透明游标 session:sequence；使用上次返回的 next_id 或 SSE id，不要自行拼接。
+      - name: limit
+        in: query
+        description: 最大日志条数。
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      responses:
+        '200':
+          description: 查询成功，JSON 封装。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControllerLogQueryResponse'
+              example:
+                success: true
+                code: 0
+                message: ok
+                data:
+                  events:
+                  - id: a1b2c3-1234:1
+                    timestamp: '2026-10-23T17:10:16.001+08:00'
+                    level: warn
+                    module: Hardware
+                    code: -2310
+                    message: Joint 1 velocity exceeded the limit.
+                  next_id: a1b2c3-1234:1
+                  has_more: false
+                  gap: null
+          headers: {}
+        '400':
+          description: 参数或游标不合法。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: 1001
+                message: limit must be in [1, 500]
+                data: null
+          headers: {}
+        '503':
+          description: 诊断服务正在停止。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: Diagnostics service is stopping
+                data: null
+          headers: {}
+      security: []
+      servers:
+      - url: http://{host}:{diagnosticsPort}
+        variables:
+          host:
+            default: 127.0.0.1
+          diagnosticsPort:
+            default: '8082'
+  /api/logs/stream:
+    get:
+      summary: 实时订阅控制器日志（SSE）
+      deprecated: false
+      description: '独立诊断服务，默认 `http://控制器地址:8082`，端口由启动配置 `diagnostics.port` 指定。无需控制权或身份头，不会续期控制权。支持跨域
+        GET/OPTIONS；开发时应将 `/api/logs` 及其子路径代理到诊断端口。
+
+
+        成功响应是长期保持的 text/event-stream 文本流，不是 JSON 响应封装。仅推送 warn/error/critical 和缺口通知。
+
+
+        不传游标只订阅后续记录；提供 after 或 Last-Event-ID 会先重放尚在缓存内的后续帧，再推送新记录。Last-Event-ID 头存在时优先于 after 查询参数，包括显式空头。使用原生
+        EventSource 自动重连时浏览器会发送 Last-Event-ID。
+
+
+        `event: log` 的 data 为 ControllerLogEvent JSON，并带 id 字段；`event: gap` 的 data 为 ControllerLogGap
+        JSON，无事件 id。重启、缓存淘汰、生产端溢出和慢客户端覆盖会产生 gap；客户端需提示可能丢失日志，并按日志 id 去重。连接开始发送 `: connected` 注释，空闲约 15
+        秒发送 `: heartbeat`。
+
+
+        默认最多同时 4 个 SSE 客户端，可由 diagnostics.max_sse_clients 配置（1–64）；超额返回 429 和 Retry-After: 5。响应头 X-Rocos-SSE-Limit
+        给出配置的上限；代理需关闭缓冲并允许长连接。响应开始前参数错误为 400，停止中为 503；开始后故障通过断开连接体现。'
+      tags:
+      - 日志与诊断
+      parameters:
+      - name: after
+        in: query
+        description: 续传游标，Last-Event-ID 头优先。
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^([A-Za-z0-9-]+:[0-9]+)?$
+          description: 不透明游标 session:sequence；使用上次返回的 next_id 或 SSE id，不要自行拼接。
+      - name: Last-Event-ID
+        in: header
+        description: 原生 SSE 重连游标，优先于 after；最多 128 字符。
+        required: false
+        example: ''
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^([A-Za-z0-9-]+:[0-9]+)?$
+          description: 不透明游标 session:sequence；使用上次返回的 next_id 或 SSE id，不要自行拼接。
+      responses:
+        '200':
+          description: SSE 流，log/gap 命名事件的 data 为 JSON。
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: ': connected
+
+
+                id: a1b2c3-1234:1
+
+                event: log
+
+                data: {"id": "a1b2c3-1234:1", "timestamp": "2026-10-23T17:10:16.001+08:00", "level": "warn",
+                "module": "Hardware", "code": -2310, "message": "Joint 1 velocity exceeded the limit."}
+
+
+                event: gap
+
+                data: {"reason":"buffer_overrun","earliest_id":"a1b2c3-1234:2"}
+
+
+                : heartbeat
+
+
+                '
+          headers:
+            X-Rocos-SSE-Limit:
+              required: false
+              description: 当前配置的 SSE 连接上限。
+              schema:
+                type: integer
+                example: 4
+            Cache-Control:
+              required: false
+              description: ''
+              schema:
+                type: string
+                example: no-cache
+            X-Accel-Buffering:
+              required: false
+              description: ''
+              schema:
+                type: string
+                example: 'no'
+        '400':
+          description: 游标不合法。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: 1001
+                message: Invalid log cursor
+                data: null
+          headers: {}
+        '429':
+          description: SSE 连接配额已满。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: SSE connection limit reached
+                data: null
+          headers:
+            Retry-After:
+              required: false
+              description: 建议等待秒数，当前为 5。
+              schema:
+                type: integer
+                example: 5
+        '503':
+          description: 诊断服务正在停止。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: Diagnostics service is stopping
+                data: null
+          headers: {}
+      security: []
+      servers:
+      - url: http://{host}:{diagnosticsPort}
+        variables:
+          host:
+            default: 127.0.0.1
+          diagnosticsPort:
+            default: '8082'
+  /api/logs/file/latest:
+    get:
+      summary: 下载控制器当前日志文件的快照
+      deprecated: false
+      description: '独立诊断服务，默认 `http://控制器地址:8082`，端口由启动配置 `diagnostics.port` 指定。无需控制权或身份头，不会续期控制权。支持跨域
+        GET/OPTIONS；开发时应将 `/api/logs` 及其子路径代理到诊断端口。
+
+
+        返回当前正在写入的日志文件的固定快照，成功正文为 text/plain; charset=utf-8 原始文本，不是 JSON；失败时才返回 JSON 封装。不合并轮转历史文件，也不接受客户端文件路径。文件可含
+        info 以及 logging.file_level 允许的其他级别。
+
+
+        文件每行格式 `[YYYY-MM-DD HH:mm:ss.SSS] [Module] [level] message`，保留文本空格和换行，不包含控制台 ANSI 颜色转义。浏览器预览可仅对
+        [level] 着色；下载应保留原始文件内容。
+
+
+        文件线程先 flush，再取得文件句柄与固定字节长度；X-Rocos-Log-Snapshot-Time 表示快照时间。快照之后追加的日志不属于本次下载，刷新会重新取快照。Content-Disposition
+        提供服务端文件名。允许空文件快照。
+
+
+        默认最多 1 个同时下载，可由 diagnostics.max_downloads 配置（1–16）；超额 429，Retry-After: 5。文件快照请求等待默认 250 ms，超时或存储不可用为
+        503，无可用文件为 404，正文开始前读取失败为 500；发送开始后的错误仅表现为连接中断。'
+      tags:
+      - 日志与诊断
+      parameters: []
+      responses:
+        '200':
+          description: 原始日志文件，可作为文件下载或文本预览。
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: '[2026-10-23 17:10:15.969] [Hardware] [info] Parsed drive: id=0, joint=joint_1
+
+                '
+          headers:
+            Content-Disposition:
+              required: false
+              description: attachment; filename="rocos-app_....log"
+              schema:
+                type: string
+            X-Rocos-Log-Snapshot-Time:
+              required: false
+              description: 带时区偏移的快照时间。
+              schema:
+                type: string
+                format: date-time
+            Cache-Control:
+              required: false
+              description: ''
+              schema:
+                type: string
+                example: no-store
+        '404':
+          description: 没有可用的当前文件。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: Log file snapshot is unavailable
+                data: null
+          headers: {}
+        '429':
+          description: 文件下载连接配额已满。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: Download connection limit reached
+                data: null
+          headers:
+            Retry-After:
+              required: false
+              description: 建议等待秒数，当前为 5。
+              schema:
+                type: integer
+                example: 5
+        '500':
+          description: 正文开始前读取快照失败。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: Cannot read log file snapshot
+                data: null
+          headers: {}
+        '503':
+          description: 诊断服务停止中，或快照超时/存储不可用。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: Log file snapshot is unavailable
+                data: null
+          headers: {}
+      security: []
+      servers:
+      - url: http://{host}:{diagnosticsPort}
+        variables:
+          host:
+            default: 127.0.0.1
+          diagnosticsPort:
+            default: '8082'
+  /api/dualarm/logs:
+    get:
+      summary: 查询双臂日志与操作反馈
+      deprecated: false
+      description: '仅 rocosDualArmMain 启用；诊断端口默认 8082。一个订阅覆盖左右两臂和进程公共日志，无需控制权，不续期控制权。INFO/warn/error/critical
+        均可进入此独立有界缓存（4096 帧或约 16 MiB），与旧 /api/logs 游标不可混用。按 id 去重，after/Last-Event-ID、分页、gap、重启及错误码规则沿用下述约定。
+
+
+        写请求记录标准化操作名、request_id、HTTP 状态、业务 code、耗时及 accepted/rejected；不记录 token、client_id、请求体或请求头。成功轮询及成功
+        heartbeat 不记操作事件；失败心跳会记录。点动续发仍逐次记录，长时间运行可能覆盖内存历史；文件保留取决于 logging 配置。未知臂归属 process。请求结果不是运动完成：后台
+        Robot 状态、CycleFinished/失败消息单独反馈，不提供请求到任务完成的关联。
+
+
+        独立诊断服务，默认 `http://控制器地址:8082`，端口由启动配置 `diagnostics.port` 指定。无需控制权或身份头，不会续期控制权。支持跨域 GET/OPTIONS；开发时应将
+        `/api/dualarm/logs` 及其子路径代理到诊断端口。
+
+
+        查询当前 App 进程的内存缓存，包含 info/warn/error/critical，不读取磁盘文件。缓存上限为 4096 帧或约 16 MiB，先到者触发淘汰；重启后旧进程记录不保留。
+
+
+        不传 after 时取最近 limit 条，按旧到新返回；传 after 时返回该游标之后的记录。limit 默认 100，范围 1–500。has_more=true 时可继续以 next_id
+        分页；随后用 next_id 订阅实时流，客户端按 id 去重。旧会话游标会返回 gap.reason=server_restarted；缓存覆盖为 buffer_overrun；生产队列丢失为
+        producer_overflow。游标格式错误、超过 128 字符、同会话游标超前、limit 非整数或越界均为 HTTP 400。'
+      tags:
+      - 日志与诊断
+      parameters:
+      - name: after
+        in: query
+        description: 不透明游标 session:sequence；使用上次返回的 next_id 或 SSE id，不要自行拼接。
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^([A-Za-z0-9-]+:[0-9]+)?$
+          description: 不透明游标 session:sequence；使用上次返回的 next_id 或 SSE id，不要自行拼接。
+      - name: limit
+        in: query
+        description: 最大日志条数。
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 100
+      responses:
+        '200':
+          description: 查询成功，JSON 封装。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DualArmLogQueryResponse'
+              example:
+                success: true
+                code: 0
+                message: ok
+                data:
+                  events:
+                  - id: a1b2c3-1234:1
+                    timestamp: '2026-10-23T17:10:16.001+08:00'
+                    level: warn
+                    module: Hardware
+                    code: -2310
+                    message: Joint 1 velocity exceeded the limit.
+                  next_id: a1b2c3-1234:1
+                  has_more: false
+                  gap: null
+          headers: {}
+        '400':
+          description: 参数或游标不合法。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: 1001
+                message: limit must be in [1, 500]
+                data: null
+          headers: {}
+        '503':
+          description: 诊断服务正在停止。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: Diagnostics service is stopping
+                data: null
+          headers: {}
+      security: []
+      servers:
+      - url: http://{host}:{diagnosticsPort}
+        variables:
+          host:
+            default: 127.0.0.1
+          diagnosticsPort:
+            default: '8082'
+  /api/dualarm/logs/stream:
+    get:
+      summary: 订阅双臂实时日志与操作反馈
+      deprecated: false
+      description: '仅 rocosDualArmMain 启用；诊断端口默认 8082。一个订阅覆盖左右两臂和进程公共日志，无需控制权，不续期控制权。INFO/warn/error/critical
+        均可进入此独立有界缓存（4096 帧或约 16 MiB），与旧 /api/logs 游标不可混用。按 id 去重，after/Last-Event-ID、分页、gap、重启及错误码规则沿用下述约定。
+
+
+        写请求记录标准化操作名、request_id、HTTP 状态、业务 code、耗时及 accepted/rejected；不记录 token、client_id、请求体或请求头。成功轮询及成功
+        heartbeat 不记操作事件；失败心跳会记录。点动续发仍逐次记录，长时间运行可能覆盖内存历史；文件保留取决于 logging 配置。未知臂归属 process。请求结果不是运动完成：后台
+        Robot 状态、CycleFinished/失败消息单独反馈，不提供请求到任务完成的关联。
+
+
+        独立诊断服务，默认 `http://控制器地址:8082`，端口由启动配置 `diagnostics.port` 指定。无需控制权或身份头，不会续期控制权。支持跨域 GET/OPTIONS；开发时应将
+        `/api/dualarm/logs` 及其子路径代理到诊断端口。
+
+
+        成功响应是长期保持的 text/event-stream 文本流，不是 JSON 响应封装。推送 info/warn/error/critical 和缺口通知。
+
+
+        不传游标只订阅后续记录；提供 after 或 Last-Event-ID 会先重放尚在缓存内的后续帧，再推送新记录。Last-Event-ID 头存在时优先于 after 查询参数，包括显式空头。使用原生
+        EventSource 自动重连时浏览器会发送 Last-Event-ID。
+
+
+        `event: log` 的 data 为 DualArmLogEvent JSON，并带 id 字段；`event: gap` 的 data 为 ControllerLogGap JSON，无事件
+        id。重启、缓存淘汰、生产端溢出和慢客户端覆盖会产生 gap；客户端需提示可能丢失日志，并按日志 id 去重。连接开始发送 `: connected` 注释，空闲约 15 秒发送 `: heartbeat`。
+
+
+        默认最多同时 4 个 SSE 客户端，可由 diagnostics.max_sse_clients 配置（1–64）；超额返回 429 和 Retry-After: 5。响应头 X-Rocos-SSE-Limit
+        给出配置的上限；代理需关闭缓冲并允许长连接。响应开始前参数错误为 400，停止中为 503；开始后故障通过断开连接体现。
+
+
+        SSE event: log 的 data 为 DualArmLogEvent；event: gap 的 data 为 ControllerLogGap。与旧流共享 max_sse_clients
+        配额。'
+      tags:
+      - 日志与诊断
+      parameters:
+      - name: after
+        in: query
+        description: 续传游标，Last-Event-ID 头优先。
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^([A-Za-z0-9-]+:[0-9]+)?$
+          description: 不透明游标 session:sequence；使用上次返回的 next_id 或 SSE id，不要自行拼接。
+      - name: Last-Event-ID
+        in: header
+        description: 原生 SSE 重连游标，优先于 after；最多 128 字符。
+        required: false
+        example: ''
+        schema:
+          type: string
+          maxLength: 128
+          pattern: ^([A-Za-z0-9-]+:[0-9]+)?$
+          description: 不透明游标 session:sequence；使用上次返回的 next_id 或 SSE id，不要自行拼接。
+      responses:
+        '200':
+          description: SSE 流，log/gap 命名事件的 data 为 JSON。
+          content:
+            text/event-stream:
+              schema:
+                type: string
+          headers:
+            X-Rocos-SSE-Limit:
+              required: false
+              description: 当前配置的 SSE 连接上限。
+              schema:
+                type: integer
+                example: 4
+            Cache-Control:
+              required: false
+              description: ''
+              schema:
+                type: string
+                example: no-cache
+            X-Accel-Buffering:
+              required: false
+              description: ''
+              schema:
+                type: string
+                example: 'no'
+        '400':
+          description: 游标不合法。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: 1001
+                message: Invalid log cursor
+                data: null
+          headers: {}
+        '429':
+          description: SSE 连接配额已满。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: SSE connection limit reached
+                data: null
+          headers:
+            Retry-After:
+              required: false
+              description: 建议等待秒数，当前为 5。
+              schema:
+                type: integer
+                example: 5
+        '503':
+          description: 诊断服务正在停止。
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiagnosticsErrorResponse'
+              example:
+                success: false
+                code: -3001
+                message: Diagnostics service is stopping
+                data: null
+          headers: {}
+      security: []
+      servers:
+      - url: http://{host}:{diagnosticsPort}
+        variables:
+          host:
+            default: 127.0.0.1
+          diagnosticsPort:
+            default: '8082'
+components:
+  parameters:
+    Arm:
+      name: arm
+      in: path
+      required: true
+      description: 目标机械臂，必须显式指定。left/right 对应双臂入口配置中的实例键，不是从站 ID；禁止默认选臂。
+      schema:
+        type: string
+        enum:
+        - left
+        - right
+      examples:
+        left:
+          summary: 左臂
+          value: left
+        right:
+          summary: 右臂
+          value: right
+  schemas:
+    StandardResponse:
+      type: object
+      required:
+      - success
+      - code
+      - message
+      properties:
+        success:
+          type: boolean
+        code:
+          type: integer
+          description: '业务状态码。0: 成功, 1xxx: 参数错误, 2xxx: 运动/规划错误, 3xxx: 状态错误, 4xxx: 标定错误, 5xxx: 异步任务错误,
+            -6xxx: Lua 错误
+
+            '
+        message:
+          type: string
+        data:
+          type:
+          - object
+          - 'null'
+          properties: {}
+    RobotStateData:
+      type: object
+      properties:
+        robot_state:
+          type: string
+          enum:
+          - IDLE
+          - ENABLING
+          - DISABLING
+          - STARTING
+          - STOPPING
+          - PAUSING
+          - RESUMING
+          - RESETTING
+          - RUNNING
+          - PAUSED
+          - STOPPED
+          - SERVOING
+          - ERROR_STATE
+          - RCI
+        work_mode:
+          type: string
+          enum:
+          - position
+          - ee_admit_teach
+          - jnt_admit_teach
+          - jnt_imp
+          - cart_imp
+          description: 当前工作模式
+        is_enabled:
+          type: boolean
+        is_running:
+          type: boolean
+        control_active:
+          type: boolean
+          description: 控制循环是否活跃，RCI 待命为 true。
+        motion_busy:
+          type: boolean
+          description: 是否存在活动运动，RCI 待命为 false。
+        timestamp:
+          type: number
+          description: 快照时刻 (epoch seconds)
+        joint_states:
+          type: array
+          items:
+            $ref: '#/components/schemas/JointState'
+        flange:
+          $ref: '#/components/schemas/Pose'
+          description: 基座到法兰的实时位姿，保持原语义，不叠加工具偏置。
+        active_tool_frame_name:
+          type: string
+        active_tool_frame:
+          $ref: '#/components/schemas/Pose'
+          description: 法兰到当前工具的固定偏置；不是基座到 TCP 的实时位姿。
+        active_object_frame_name:
+          type: string
+        active_object_frame:
+          $ref: '#/components/schemas/Pose'
+        hw_state:
+          $ref: '#/components/schemas/HardwareState'
+        tcp:
+          oneOf:
+          - $ref: '#/components/schemas/Pose'
+            description: 基座到当前 TCP 的实时位姿，使用与 flange 相同的关节采样及同一工具注册表快照；无活动工具时等于 flange，FK/反馈无效时为 null。缺少此字段表示旧版
+              App。
+          - type: 'null'
+        active_tool_package:
+          oneOf:
+          - $ref: '#/components/schemas/ToolPackageData'
+            description: 当前包工具的摘要、版本、安装 M、局部 TCP C、revision 和 URDF 路径，与 tcp 使用同一注册表快照；普通工具或无工具为 null。省略
+              default_mount/default_tcp 和 calibration_yaml。模型为 flange*M，实时 TCP 为 flange*M*C。旧 App 缺省此字段。
+          - type: 'null'
+        rci:
+          $ref: '#/components/schemas/RciStatusData'
+    RciStatusData:
+      type: object
+      description: RCI 入口、活动会话、机器人状态和伺服诊断。
+      properties:
+        enabled:
+          type: boolean
+          description: RCI 模式占用运动入口，包括待命、伺服及关闭中的互斥阶段。故障自动置 false。
+        closing:
+          type: boolean
+          description: 正在关闭 RCI，等待活动运动完成停止
+        control_active:
+          type: boolean
+          description: RCI 会话仍处于执行或受控停止生命周期。待命为 false，与顶层控制循环活跃含义不同。
+        robot_state:
+          type: string
+          description: 当前 FSM 状态，包含独立 RCI 待命态。
+        last_control:
+          anyOf:
+          - $ref: '#/components/schemas/RciServoSnapshot'
+          - type: 'null'
+          description: 最近进入停止或故障状态时保存的伺服快照，初始为 null。快照也可能来自普通 servo 会话。
+        current_control:
+          $ref: '#/components/schemas/RciServoSnapshot'
+          description: 当前 motion 为 MoveServo 时提供，包括停止或故障处理阶段。该字段的存在与 control_active 应分别解读。
+      required:
+      - enabled
+      - closing
+      - control_active
+      - robot_state
+      - last_control
+    RobotInfoData:
+      type: object
+      properties:
+        info_schema_version:
+          type: integer
+          description: 本响应信息模型版本，当前为 2。v2 将 joint_infos.cnt_per_unit 更名为 pos_per_unit，增加 vel_per_unit
+            与 load_torque_per_unit。v1 使用旧字段；缺省表示更早响应。新增可选字段不升版，破坏性调整须升级。
+          enum:
+          - 2
+        controller:
+          type: object
+          description: 控制器软件信息。
+          properties:
+            app_version:
+              type: string
+              description: App 编译版本（含预发布标识）。当前已接入真实编译值。
+            build_commit:
+              type:
+              - string
+              - 'null'
+              description: App 构建对应 Git 提交；未知为 null。
+            api_version:
+              type: string
+              description: Apifox API 契约版本，与 App 版本及 info_schema_version 独立；当前 3.0.0。
+            shm_abi_version:
+              type: integer
+              description: App 编译采用的共享内存 ABI 版本；不表示已与主站完成握手。
+              minimum: 1
+            capabilities:
+              type: array
+              items:
+                type: string
+              description: App 明确声明的能力，非完整功能清单。当前包含 robot_info_v2，表示 joint_infos 使用四个独立单位变换字段；未列出的能力不可推断为不支持。
+          required:
+          - app_version
+          - build_commit
+          - api_version
+          - shm_abi_version
+          - capabilities
+        robot:
+          type: object
+          description: 机器人身份与模型元数据。当前 source=placeholder，其余未知字段为 null，mass_complete=false。Viz 现有 URDF
+            统计独立保留。
+          properties:
+            source:
+              type: string
+              description: 数据来源：placeholder 尚未接入；configuration 配置文件；runtime 运行时读取。
+              enum:
+              - placeholder
+              - configuration
+              - runtime
+            name:
+              type:
+              - string
+              - 'null'
+              description: 机器人模型名称。
+            package_version:
+              type:
+              - string
+              - 'null'
+              description: 机器人模型包版本。
+            device_id:
+              type:
+              - string
+              - 'null'
+              description: 机器人设备标识，用于本机配置关联；与产品序列号不同。
+            serial_number:
+              type:
+              - string
+              - 'null'
+              description: 机器人序列号，保留前导零。
+            dof:
+              type:
+              - integer
+              - 'null'
+              description: 机器人运动自由度；未知为 null。
+              minimum: 0
+            base_link:
+              type:
+              - string
+              - 'null'
+              description: 运动学链基座 link 名。
+            tip_link:
+              type:
+              - string
+              - 'null'
+              description: 运动学链末端/法兰 link 名。
+            model_digest:
+              type:
+              - string
+              - 'null'
+              description: 模型包内容摘要，未来接入时采用 sha256:<64 位小写十六进制>；未知为 null。
+              pattern: ^sha256:[a-f0-9]{64}$
+            link_count:
+              type:
+              - integer
+              - 'null'
+              description: 模型连杆总数。
+              minimum: 0
+            mass_kg:
+              type:
+              - number
+              - 'null'
+              description: 已知模型质量之和，单位 kg；未知为 null；仅 mass_complete=true 时表示总质量。
+              minimum: 0
+            mass_complete:
+              type: boolean
+              description: 所有相关连杆质量是否完整；尚未接入时为 false。
+          required:
+          - source
+          - name
+          - package_version
+          - device_id
+          - serial_number
+          - dof
+          - base_link
+          - tip_link
+          - model_digest
+          - link_count
+          - mass_kg
+          - mass_complete
+        master:
+          type: object
+          description: 主站/仿真后端信息。当前为 placeholder + unknown，其余为 null。
+          properties:
+            source:
+              type: string
+              description: 数据来源：placeholder 尚未接入；configuration 配置文件；runtime 运行时读取。
+              enum:
+              - placeholder
+              - configuration
+              - runtime
+            backend:
+              type: string
+              description: 控制后端；unknown 表示尚未确定，不得把配置从站当成实际 ECM 连接。
+              enum:
+              - unknown
+              - ecm
+              - igh
+              - mujoco
+            version:
+              type:
+              - string
+              - 'null'
+              description: 主站程序版本；backend=ecm 时是 ECM 版本，其他后端是对应程序版本。
+            sdk_version:
+              type:
+              - string
+              - 'null'
+              description: 主站使用的 SDK 版本（如 EC-Master SDK），与主站程序版本分开。
+            master_id:
+              type:
+              - integer
+              - 'null'
+              description: 主站实例编号；0 是有效编号。
+              minimum: 0
+            cycle_time_us:
+              type:
+              - integer
+              - 'null'
+              description: 主站周期，单位微秒。
+              minimum: 1
+            configured_slave_count:
+              type:
+              - integer
+              - 'null'
+              description: 配置中的完整从站数量；未知为 null，不用当前不完整 slaves 数组长度代替。
+              minimum: 0
+          required:
+          - source
+          - backend
+          - version
+          - sdk_version
+          - master_id
+          - cycle_time_us
+          - configured_slave_count
+        slaves:
+          type: array
+          items:
+            type: object
+            description: 从站清单条目。当前仅由既有驱动配置生成（role=drive, source=configuration）；identity_source=unknown，身份/PDO
+              字段为 null。不包含在线、WKC 等实时诊断状态。
+            properties:
+              id:
+                type: integer
+                description: 配置条目 ID；当前对应 drives[].id。不是已扫描的物理位置或 EtherCAT 地址。
+              name:
+                type:
+                - string
+                - 'null'
+                description: 从站设备名称。
+              joint_name:
+                type:
+                - string
+                - 'null'
+                description: 关联关节名称；非关节设备可为 null。
+              role:
+                type: string
+                description: 设备用途。
+                enum:
+                - drive
+                - ft_sensor
+                - io
+                - unknown
+              source:
+                type: string
+                description: 数据来源：placeholder 尚未接入；configuration 配置文件；runtime 运行时读取。
+                enum:
+                - placeholder
+                - configuration
+                - runtime
+              vendor_id:
+                type:
+                - integer
+                - 'null'
+                description: 厂家标识（十进制无符号 32 位数）。
+                minimum: 0
+                maximum: 4294967295
+              product_code:
+                type:
+                - integer
+                - 'null'
+                description: 产品代码（十进制无符号 32 位数）。
+                minimum: 0
+                maximum: 4294967295
+              revision_number:
+                type:
+                - integer
+                - 'null'
+                description: 设备硬件/产品修订号（十进制无符号 32 位数），与固件版本分开。
+                minimum: 0
+                maximum: 4294967295
+              serial_number:
+                type:
+                - string
+                - 'null'
+                description: 设备序列号；采用字符串保留格式和前导零。
+              firmware_version:
+                type:
+                - string
+                - 'null'
+                description: 从站固件版本。
+              identity_source:
+                type: string
+                description: 身份字段来源：unknown 未获取；configuration 配置声明；device 实际设备回读。
+                enum:
+                - unknown
+                - configuration
+                - device
+              input_pdo_count:
+                type:
+                - integer
+                - 'null'
+                description: 从站到主站方向的 PDO 映射条目数，不是字节数或 PDO 对象数。
+                minimum: 0
+              output_pdo_count:
+                type:
+                - integer
+                - 'null'
+                description: 主站到从站方向的 PDO 映射条目数，不是字节数或 PDO 对象数。
+                minimum: 0
+            required:
+            - id
+            - name
+            - joint_name
+            - role
+            - source
+            - vendor_id
+            - product_code
+            - revision_number
+            - serial_number
+            - firmware_version
+            - identity_source
+            - input_pdo_count
+            - output_pdo_count
+          description: 设备清单；当前仅配置驱动器。空数组不代表总线没有从站。
+        slaves_complete:
+          type: boolean
+          description: 清单是否覆盖当前后端的全部从站；当前 false，不得据数组长度推断完整总线。
+        joint_infos:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              pos_per_unit:
+                type: number
+                description: 位置码值/用户单位（rad 或 m），对应 hardware.yaml 的 transform.pos_per_unit，配置省略时为 1.0。返回实际生效值，必须有限且非零，允许负值表示方向反转。位置读回
+                  = (raw_position - zero_offset) / pos_per_unit / ratio；下发采用逆变换并取整、校验限位。
+              vel_per_unit:
+                type: number
+                description: 速度码值/(用户单位/s)，对应 transform.vel_per_unit；配置省略时继承当前驱动器 pos_per_unit。返回实际生效值，必须有限且非零。速度读回
+                  = raw_velocity / vel_per_unit / ratio；下发采用逆变换，不应用位置零点。
+              torque_per_unit:
+                type: number
+                description: 驱动器力矩码值/单位力矩（转动关节 N·m，移动关节 N），对应 transform.torque_per_unit，配置省略时为 1.0。返回实际生效值，必须有限且非零。驱动器力矩读回
+                  = raw_torque / torque_per_unit；下发采用逆变换，不应用 ratio 或位置零点。
+              load_torque_per_unit:
+                type: number
+                description: 负载力矩码值/单位力矩（转动关节 N·m，移动关节 N），对应 transform.load_torque_per_unit，配置省略时为 1.0。返回实际生效值，必须有限且非零。负载力矩读回
+                  = raw_load_torque / load_torque_per_unit；torque_source 为 load_torque（int16 PDO）或 secondary_position（int32
+                  PDO）均使用该比例，不应用位置零点、pos_per_unit 或 ratio。目前负载力矩只有读取接口；默认值不代表已完成传感器标定。
+              ratio:
+                type: number
+              unit_name:
+                type: string
+              zero_offset:
+                type: integer
+            required:
+            - pos_per_unit
+            - vel_per_unit
+            - torque_per_unit
+            - load_torque_per_unit
+          description: 驱动器关节配置及四个独立单位变换比例。v2 将 cnt_per_unit 更名为 pos_per_unit，并增加 vel_per_unit 与 load_torque_per_unit；torque_per_unit
+            保留并明确含义。客户端应按 info_schema_version 识别字段集合。
+      description: robot/info 信息基线 v2。保留 joint_infos；扩展键在新 App 中固定返回，旧 App 可以仅有 joint_infos。未知值为 null，不能用
+        0/空字符串/示例版本冒充实测数据。当前只有 App 编译版本、编译 ABI、API 版本、能力标识和既有关节/驱动配置已接入；其余占位。 v2 的 joint_infos 返回 pos_per_unit、vel_per_unit、torque_per_unit、load_torque_per_unit，不再返回
+        cnt_per_unit。
+    MotionResponse:
+      allOf:
+      - $ref: '#/components/schemas/StandardResponse'
+      - type: object
+        properties:
+          data:
+            type: object
+            properties:
+              robot_state:
+                type: string
+              control_active:
+                type: boolean
+              motion_busy:
+                type: boolean
+                description: WaitMove 专用
+    MoveStatusData:
+      type: object
+      properties:
+        robot_state:
+          type: string
+        is_running:
+          type: boolean
+        control_active:
+          type: boolean
+        task_id:
+          type: string
+        task:
+          type:
+          - object
+          - 'null'
+          properties: {}
+    ControlOwnerData:
+      type: object
+      properties:
+        token:
+          type: string
+          description: 仅 acquire/takeover 成功时返回，心跳与查询不返回 token
+        has_owner:
+          type: boolean
+        owner_ip:
+          type: string
+        owner_port:
+          type: integer
+          description: 申请控制权时的源端口，仅供审计，不用于身份校验
+        owner_connection:
+          type: string
+          description: 申请时的 remote_addr:remote_port，仅供审计，不绑定 TCP 连接
+        owner_client_id:
+          type: string
+          description: 稳定客户端会话 ID；浏览器端口变更时仍可保证同一前端会话继续持有 token
+        owner_name:
+          type: string
+        owner_agent:
+          type: string
+          description: 客户端 User-Agent
+        held_for_seconds:
+          type: integer
+          description: 自 acquire 起已持有的秒数
+        idle_seconds:
+          type: integer
+          description: 自上次续期起的空闲秒数
+        expires_in_seconds:
+          type: integer
+          description: 距离 TTL 到期的剩余秒数
+        ttl_seconds:
+          type: integer
+          minimum: 1
+          description: 控制权超时秒数，默认 300，http_control_ttl_seconds 必须为正整数；通过鉴权的写请求与心跳续期
+        heartbeat_interval_seconds:
+          type: number
+          description: 建议心跳间隔，默认 5 秒；短 TTL 时不超过 TTL/3
+        client_id:
+          type: string
+          description: 绑定的客户端身份，acquire/takeover 返回；后续写请求和心跳须通过请求头回传
+        client_id_auto:
+          type: boolean
+          description: 服务端自动生成 client_id 时为 true
+    JointState:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        position:
+          type: number
+        velocity:
+          type: number
+        torque:
+          type: number
+        load_torque:
+          type: number
+        status:
+          type: integer
+          description: '0: disabled, 1: fault, 2: enabled'
+    Pose:
+      type: object
+      properties:
+        position:
+          type: object
+          properties:
+            x:
+              type: number
+              default: 0
+            y:
+              type: number
+              default: 0
+            z:
+              type: number
+              default: 0
+          required:
+          - x
+          - y
+          - z
+        orientation:
+          type: object
+          properties:
+            x:
+              type: number
+              default: 0
+            y:
+              type: number
+              default: 0
+            z:
+              type: number
+              default: 0
+            w:
+              type: number
+              default: 1
+          required:
+          - x
+          - y
+          - z
+          - w
+      required:
+      - position
+      - orientation
+    HardwareState:
+      type: object
+      properties:
+        joint_num:
+          type: integer
+        state:
+          type: integer
+          description: '0: DISABLED, 1: ENABLED, 2: ERROR'
+    ToolPackageData:
+      type: object
+      properties:
+        name:
+          type: string
+          pattern: ^[A-Za-z0-9_.-]{1,64}$
+        package_version:
+          type: string
+        digest:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        revision:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740990
+        urdf:
+          type: string
+          description: 包内 URDF 路径，可为空；资源通过 name+digest+path 查询
+        mount:
+          $ref: '#/components/schemas/Pose'
+        tcp:
+          $ref: '#/components/schemas/Pose'
+        default_mount:
+          $ref: '#/components/schemas/Pose'
+        default_tcp:
+          $ref: '#/components/schemas/Pose'
+        calibration_yaml:
+          type: string
+          description: 本机标定记录 YAML，含时间、robot_id、包摘要、安装、法兰 TCP 与误差
+      required:
+      - name
+      - package_version
+      - digest
+      - revision
+      - urdf
+      - mount
+      - tcp
+    RciServoSnapshot:
+      type: object
+      description: 来自当前伺服运动发布的周期快照及诊断。初始化阶段可返回零值，结合 cycle、sample_time_ns 和 output_valid 判断有效性。
+      properties:
+        cycle:
+          type: integer
+          minimum: 0
+          description: 伺服控制周期序号
+        sample_time_ns:
+          type: integer
+          minimum: 0
+          description: 反馈采样的 steady_clock 单调时钟时间，单位 ns
+        source_time_us:
+          type: integer
+          minimum: 0
+          description: 硬件反馈源时间，单位 us，具体来源由硬件实现决定
+        received_message_id:
+          type: integer
+          minimum: 0
+          description: 最近接受的运动指令序号
+        applied_message_id:
+          type: integer
+          minimum: 0
+          description: 最近成功提交硬件接口的参考所对应的指令序号
+        fault_code:
+          type: integer
+          description: 伺服故障或停止原因的原始 Result 整数，0 表示无错误
+        errors:
+          type: array
+          minItems: 41
+          maxItems: 41
+          items:
+            type: boolean
+          description: 索引 0 为任意伺服故障，1 为首点错误，2 为通信错误，3 为运动约束错误，4..40 保留。
+        q:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: number
+          description: 采样的实际关节位置，单位 rad。数组固定 10 项，使用前实际自由度项。
+        dq:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: number
+          description: 采样的实际关节速度，单位 rad/s。数组固定 10 项，使用前实际自由度项。
+        q_d:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: number
+          description: 伺服信号处理后的关节参考位置，单位 rad。数组固定 10 项，使用前实际自由度项。
+        dq_d:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: number
+          description: 伺服信号处理后的关节参考速度，单位 rad/s。数组固定 10 项，使用前实际自由度项。
+        ddq_d:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: number
+          description: 伺服信号处理后的关节参考加速度，单位 rad/s²。数组固定 10 项，使用前实际自由度项。
+        q_cmd:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: number
+          description: 最终控制输出中的关节位置字段，单位 rad，结合 output_mode 和 output_valid 解读。数组固定 10 项，使用前实际自由度项。
+        tau_cmd:
+          type: array
+          minItems: 10
+          maxItems: 10
+          items:
+            type: number
+          description: 最终控制输出中的力矩字段，单位 Nm，结合 output_mode 和 output_valid 解读。数组固定 10 项，使用前实际自由度项。
+        output_mode:
+          type: integer
+          description: 硬件控制输出模式的原始枚举整数
+        output_valid:
+          type: boolean
+          description: 本周期输出成功提交硬件接口且未请求安全停止。驱动实际执行结果需结合反馈判断。
+        control_command_success_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: 最近至多 100 个控制周期收到新运动指令的比例。查询包、重复包和乱序包不计成功。此字段统计接收质量，驱动执行情况由实际反馈反映。
+        control_cycles:
+          type: integer
+          minimum: 0
+          description: 本会话通信统计记录的控制周期总数
+        elapsed_periods:
+          type: integer
+          minimum: 0
+          description: 累计经过的控制周期数，由 elapsed_ns 与硬件周期计算，累计保留不足一周期的余量
+      required:
+      - cycle
+      - sample_time_ns
+      - source_time_us
+      - received_message_id
+      - applied_message_id
+      - fault_code
+      - errors
+      - q
+      - dq
+      - q_d
+      - dq_d
+      - ddq_d
+      - q_cmd
+      - tau_cmd
+      - output_mode
+      - output_valid
+      - control_command_success_rate
+      - control_cycles
+      - elapsed_periods
+    ArmId:
+      type: string
+      enum:
+      - left
+      - right
+    ArmDescriptor:
+      type: object
+      required:
+      - arm
+      - device_id
+      - ecat_id
+      - joint_count
+      - api_prefix
+      properties:
+        arm: &id002
+          $ref: '#/components/schemas/ArmId'
+        device_id:
+          type: string
+          description: 有效配置中的设备 ID
+        ecat_id:
+          type: integer
+          minimum: 0
+        joint_count:
+          type: integer
+          minimum: 1
+        api_prefix:
+          type: string
+          description: 该臂的 API 前缀，如 /api/arms/left
+        base_link: &id003
+          type: string
+        tip_link: &id004
+          type: string
+        joint_names: &id001
+          type: array
+          items:
+            type: string
+    ArmsData:
+      type: object
+      required:
+      - execution_mode
+      - arms
+      properties:
+        execution_mode:
+          type: string
+          const: independent
+          description: 各自规划和执行，不承诺跨臂时间同步
+        arms:
+          type: array
+          minItems: 2
+          maxItems: 2
+          description: 恰好 left/right 各一个，按 left、right 顺序返回。
+          items:
+            $ref: '#/components/schemas/ArmDescriptor'
+        model_url:
+          type:
+          - string
+          - 'null'
+        capabilities:
+          type: object
+          properties:
+            jog: *id001
+            motion: *id001
+            frames:
+              type: boolean
+            tool_packages:
+              type: boolean
+              const: false
+            synchronized_motion:
+              type: boolean
+              const: false
+            six_point_calibration:
+              type: boolean
+              const: true
+            tool_package_calibration:
+              type: boolean
+              const: true
+    ArmsResponse:
+      allOf:
+      - $ref: '#/components/schemas/StandardResponse'
+      - type: object
+        required:
+        - data
+        properties:
+          success:
+            const: true
+          code:
+            const: 0
+          data:
+            $ref: '#/components/schemas/ArmsData'
+    DualArmBusinessError:
+      description: 双臂扩展的业务失败包络；保留上游 success/code/message/data。沿用既有参数和控制权错误码，不新建运动错误码体系。
+      allOf:
+      - $ref: '#/components/schemas/StandardResponse'
+      - type: object
+        properties:
+          success:
+            const: false
+          code:
+            type: integer
+            not:
+              const: 0
+    RobotEnabledData:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        disabled:
+          type: boolean
+        robot_state:
+          type: string
+    NamedFrame:
+      type: object
+      properties:
+        name:
+          type: string
+        frame:
+          $ref: '#/components/schemas/Pose'
+        package:
+          $ref: '#/components/schemas/ToolPackageData'
+    FrameNameList:
+      type: object
+      properties:
+        names:
+          type: array
+          items:
+            type: string
+        active:
+          type: string
+          description: 当前激活的坐标系名称
+    FramesSnapshot:
+      type: object
+      properties:
+        path:
+          type: string
+        tool_frames:
+          type: array
+          items:
+            type: string
+        object_frames:
+          type: array
+          items:
+            type: string
+        active_tool_frame:
+          type: string
+        active_object_frame:
+          type: string
+    ToolRegistryListData:
+      type: object
+      properties:
+        names:
+          type: array
+          items:
+            type: string
+        active:
+          type: string
+          description: 空字符串表示法兰
+        file_path:
+          type: string
+          description: 启动配置 robot.frames 解析后的默认持久化路径
+        package_support:
+          type: boolean
+          description: true 表示支持工具包接口；旧 App 不返回
+        robot_id:
+          type: string
+      required:
+      - names
+      - active
+      - file_path
+    ToolRegistryWriteData:
+      type: object
+      properties:
+        name:
+          type: string
+          pattern: ^[A-Za-z0-9_.-]{1,64}$
+          description: 工具名称，ASCII 字母、数字、下划线、点或短横，1–64 字符
+        frame:
+          $ref: '#/components/schemas/Pose'
+        persisted:
+          type: boolean
+      required:
+      - name
+      - frame
+      - persisted
+    ToolRegistrySelectionData:
+      type: object
+      properties:
+        name:
+          type: string
+        active:
+          type: string
+        persisted:
+          type: boolean
+      required:
+      - active
+      - persisted
+    TcpPoseData:
+      type: object
+      required:
+      - pose
+      - reference_frame
+      properties:
+        pose:
+          $ref: '#/components/schemas/Pose'
+          description: 基座到指定/当前 TCP 的实时位姿，位置单位 m、姿态为四元数 xyzw
+        reference_frame:
+          type: string
+          const: base
+          description: 位姿统一相对基坐标系表达
+    LoadParametersData:
+      type: object
+      properties:
+        mass:
+          type: number
+          minimum: 0
+          description: 负载质量，单位 kg，必须有限；0 表示无负载。
+        com:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: number
+          description: 法兰坐标系下的质心 [x,y,z]，单位 m，各分量必须有限。
+      required:
+      - mass
+      - com
+    LoadParametersState:
+      allOf:
+      - $ref: '#/components/schemas/LoadParametersData'
+      - type: object
+        properties:
+          valid:
+            type: boolean
+            description: 当前是否已有有效负载参数；false 时 mass/com 不可视为有效辨识结果。
+        required:
+        - valid
+    LoadParametersResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/LoadParametersState'
+          - type: 'null'
+      required:
+      - success
+      - code
+      - message
+      - data
+    SetLoadParametersResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          anyOf:
+          - $ref: '#/components/schemas/LoadParametersData'
+          - type: 'null'
+      required:
+      - success
+      - code
+      - message
+      - data
+    SaveLoadParametersResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          anyOf:
+          - type: object
+            properties:
+              path:
+                type: string
+                description: 实际使用的控制器端输出路径。
+            required:
+            - path
+          - type: 'null'
+      required:
+      - success
+      - code
+      - message
+      - data
+    Vector3:
+      type: object
+      properties:
+        x:
+          type: number
+          default: 0
+        y:
+          type: number
+          default: 0
+        z:
+          type: number
+          default: 0
+    WorkcellModel:
+      type: object
+      required:
+      - revision
+      - root_link
+      - urdf_url
+      - mesh_url
+      - assets
+      - arms
+      properties:
+        revision:
+          type: string
+          description: 整个启动模型快照的 FNV-1a 内容校验和；用于缓存失效，不是安全签名。
+        root_link:
+          type: string
+        urdf_url:
+          type: string
+        mesh_url:
+          type: string
+        assets:
+          type: array
+          items:
+            type: object
+            required:
+            - path
+            - bytes
+            properties:
+              path:
+                type: string
+              bytes:
+                type: integer
+                minimum: 0
+        arms:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            type: object
+            required:
+            - arm
+            - base_link
+            - tip_link
+            - joint_names
+            properties:
+              arm: *id002
+              base_link: *id003
+              tip_link: *id004
+              joint_names: *id001
+    SixPointCalibrationResponse:
+      allOf:
+      - $ref: '#/components/schemas/StandardResponse'
+      - type: object
+        properties:
+          data:
+            $ref: '#/components/schemas/SixPointCalibrationSession'
+        required:
+        - data
+    SixPointCalibrationSession:
+      type: object
+      properties:
+        session_id:
+          type: string
+        name:
+          type: string
+          pattern: ^[A-Za-z0-9_.-]{1,64}$
+          description: 工具名称，ASCII 字母、数字、下划线、点或短横，1–64 字符
+        samples:
+          type: array
+          minItems: 6
+          maxItems: 6
+          items:
+            oneOf:
+            - $ref: '#/components/schemas/SixPointCalibrationSample'
+            - type: 'null'
+          description: 按 P1–P6 排序，未采集位置为 null
+        captured:
+          type: integer
+          minimum: 0
+          maximum: 6
+        result:
+          oneOf:
+          - $ref: '#/components/schemas/SixPointCalibrationSolution'
+            description: 未成功计算或任一点重采集后为 null
+          - type: 'null'
+        package_digest:
+          type: string
+          description: 采集时固定的包摘要；普通工具为空字符串
+        package_revision:
+          type: integer
+          description: 采集时的安装定义 revision；普通工具为 0
+      required:
+      - session_id
+      - name
+      - samples
+      - captured
+      - result
+    SixPointCalibrationSample:
+      type: object
+      properties:
+        index:
+          type: integer
+          minimum: 1
+          maximum: 6
+        flange:
+          $ref: '#/components/schemas/Pose'
+        joints:
+          type: array
+          items:
+            type: number
+          minItems: 1
+          description: 采集时真实关节角，rad
+        timestamp:
+          type: number
+          description: 采集时 Unix 时间，秒
+      required:
+      - index
+      - flange
+      - joints
+      - timestamp
+    SixPointCalibrationSolution:
+      type: object
+      properties:
+        pose:
+          $ref: '#/components/schemas/Pose'
+        error_state:
+          type: boolean
+          const: false
+        metrics:
+          type: object
+          properties:
+            rms_error:
+              type: number
+              description: P1–P4 TCP 到固定参考点的 RMS 距离，m
+            max_error:
+              type: number
+              description: 最大距离残差，m
+            condition_number:
+              type: number
+            axis_angle_degrees:
+              type: number
+              description: P5−P4 与 P6−P4 的夹角，degree
+          required:
+          - rms_error
+          - max_error
+          - condition_number
+          - axis_angle_degrees
+      required:
+      - pose
+      - error_state
+      - metrics
+    ControllerLogQueryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          $ref: '#/components/schemas/ControllerLogQueryData'
+      required:
+      - success
+      - code
+      - message
+      - data
+    ControllerLogQueryData:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/ControllerLogEvent'
+          description: 按事件序号从旧到新排列。
+        next_id:
+          type: string
+          description: 后续查询或 SSE 续传使用的游标；空 events 也返回。
+        has_more:
+          type: boolean
+          description: 仍有后续缓存记录时为 true；继续以 next_id 查询。
+        gap:
+          oneOf:
+          - $ref: '#/components/schemas/ControllerLogGap'
+            description: 重启、覆盖或生产端丢失提示；无缺口时为 null。
+          - type: 'null'
+      required:
+      - events
+      - next_id
+      - has_more
+      - gap
+    ControllerLogEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          description: 会话与序号组成的事件 ID；用于去重和断线续传。
+        timestamp:
+          type: string
+          format: date-time
+          description: 带本地时区偏移和毫秒的时间。
+        level:
+          type: string
+          enum:
+          - warn
+          - error
+          - critical
+        module:
+          type: string
+          description: 日志模块，例如 Robot、Hardware、HttpServer。
+        code:
+          type:
+          - integer
+          - 'null'
+          description: 业务错误码；没有错误码时为 null。
+        message:
+          type: string
+          description: 格式化后的可读消息；超长消息可能含 [truncated]。
+      required:
+      - id
+      - timestamp
+      - level
+      - module
+      - code
+      - message
+    ControllerLogGap:
+      type: object
+      properties:
+        reason:
+          type: string
+          enum:
+          - server_restarted
+          - buffer_overrun
+          - producer_overflow
+        earliest_id:
+          type: string
+          description: 用于提示缺口边界的最早可用 ID。
+        count:
+          type: integer
+          minimum: 1
+          description: 已知丢失条数；仅 producer_overflow 等可计数情况提供。
+      required:
+      - reason
+      - earliest_id
+    DiagnosticsErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          type: 'null'
+      required:
+      - success
+      - code
+      - message
+      - data
+    DualArmLogOperation:
+      type: object
+      required:
+      - name
+      - request_id
+      - outcome
+      - http_status
+      - duration_ms
+      properties:
+        name:
+          type: string
+          maxLength: 128
+        request_id:
+          type: string
+          maxLength: 128
+        outcome:
+          type: string
+          enum:
+          - accepted
+          - rejected
+          description: 仅表示 HTTP 操作受理或拒绝，不表示物理运动完成。
+        http_status:
+          type: integer
+        duration_ms:
+          type: number
+          minimum: 0
+    DualArmLogEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          description: 会话与序号组成的事件 ID；用于去重和断线续传。
+        timestamp:
+          type: string
+          format: date-time
+          description: 带本地时区偏移和毫秒的时间。
+        level:
+          type: string
+          enum:
+          - info
+          - warn
+          - error
+          - critical
+        module:
+          type: string
+          description: 日志模块，例如 Robot、Hardware、HttpServer。
+        code:
+          type:
+          - integer
+          - 'null'
+          description: 业务错误码；没有错误码时为 null。
+        message:
+          type: string
+          description: 格式化后的可读消息；超长消息可能含 [truncated]。
+        arm:
+          type: string
+          enum:
+          - left
+          - right
+          - process
+          description: 未知臂名的请求和公共进程日志归属 process，不猜测对应臂。
+        ecat_id:
+          type:
+          - integer
+          - 'null'
+        device_id:
+          type:
+          - string
+          - 'null'
+        category:
+          type: string
+          enum:
+          - log
+          - operation
+        operation:
+          anyOf:
+          - $ref: '#/components/schemas/DualArmLogOperation'
+          - type: 'null'
+      required:
+      - id
+      - timestamp
+      - level
+      - module
+      - code
+      - message
+      - arm
+      - ecat_id
+      - device_id
+      - category
+      - operation
+      description: 双臂专用 INFO+ 事件。RT 事件携带固定大小的臂/主站上下文，后台序列化 device_id。未增加请求和后台完成事件的任务关联。
+    DualArmLogQueryData:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/DualArmLogEvent'
+          description: 按事件序号从旧到新排列。
+        next_id:
+          type: string
+          description: 后续查询或 SSE 续传使用的游标；空 events 也返回。
+        has_more:
+          type: boolean
+          description: 仍有后续缓存记录时为 true；继续以 next_id 查询。
+        gap:
+          oneOf:
+          - $ref: '#/components/schemas/ControllerLogGap'
+            description: 重启、覆盖或生产端丢失提示；无缺口时为 null。
+          - type: 'null'
+      required:
+      - events
+      - next_id
+      - has_more
+      - gap
+    DualArmLogQueryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          $ref: '#/components/schemas/DualArmLogQueryData'
+      required:
+      - success
+      - code
+      - message
+      - data
+  securitySchemes:
+    ControlToken:
+      type: apiKey
+      in: header
+      name: X-Rocos-Control-Token
+      description: '单持有者 HTTP 控制权令牌，由 acquire/takeover 获取。声明 ControlToken 鉴权的接口必须同时提供匹配的 X-Rocos-Client-Id。缺
+        token 返回 3006，错误、过期或身份不匹配返回 3007。通过鉴权的控制请求与 heartbeat 续期。RCI enable/disable 需要 HTTP 控制权，RCI start/stop/status
+        按各接口 security 声明接入。
+
+        双臂扩展：与 URL 中的 arm 绑定；左右租约独立校验。'
+    ClientId:
+      type: apiKey
+      in: header
+      name: X-Rocos-Client-Id
+      description: '与申请 HTTP 控制权时绑定的 client_id 一致。接口声明 ControlToken 鉴权时，同时提供匹配的 ClientId。
+
+        双臂扩展：与 URL 中的 arm 绑定；左右租约独立校验。'

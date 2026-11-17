@@ -21,7 +21,7 @@ hardware:
     transform:
       ratio: 1.0
       offset_pos_cnt: 0
-      cnt_per_unit: 156455.678
+      pos_per_unit: 156455.678
       torque_per_unit: 1.0
       user_unit_name: rad
     inputs:
@@ -55,7 +55,7 @@ hardware:
     transform:
       ratio: 1.0
       offset_pos_cnt: 0
-      cnt_per_unit: 156455.678
+      pos_per_unit: 156455.678
       torque_per_unit: 1.0
       user_unit_name: rad
     inputs:
@@ -89,7 +89,7 @@ hardware:
     transform:
       ratio: 1.0
       offset_pos_cnt: 0
-      cnt_per_unit: 156455.678
+      pos_per_unit: 156455.678
       torque_per_unit: 1.0
       user_unit_name: rad
     inputs:
@@ -123,7 +123,7 @@ hardware:
     transform:
       ratio: 1.0
       offset_pos_cnt: 0
-      cnt_per_unit: 156455.678
+      pos_per_unit: 156455.678
       torque_per_unit: 1.0
       user_unit_name: rad
     inputs:
@@ -157,7 +157,7 @@ hardware:
     transform:
       ratio: 1.0
       offset_pos_cnt: 0
-      cnt_per_unit: 156455.678
+      pos_per_unit: 156455.678
       torque_per_unit: 1.0
       user_unit_name: rad
     inputs:
@@ -175,7 +175,7 @@ hardware:
       target_torque: "Target Torque"
 
   # ===========================================================================
-  # joint_6 — 末端旋转 (id=5, cnt_per_unit 与其他轴不同)
+  # joint_6 — 末端旋转 (id=5, pos_per_unit 与其他轴不同)
   # ===========================================================================
   - id: 5
     type: driver
@@ -191,7 +191,7 @@ hardware:
     transform:
       ratio: 1.0
       offset_pos_cnt: 0
-      cnt_per_unit: 130379.73
+      pos_per_unit: 130379.73
       torque_per_unit: 1.0
       user_unit_name: rad
     inputs:
@@ -225,7 +225,7 @@ hardware:
     transform:
       ratio: 1.0
       offset_pos_cnt: 0
-      cnt_per_unit: 130379.73
+      pos_per_unit: 130379.73
       torque_per_unit: 1.0
       user_unit_name: rad
     inputs:

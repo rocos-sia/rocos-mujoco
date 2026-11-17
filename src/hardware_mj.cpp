@@ -189,6 +189,8 @@ HardwareMJ::~HardwareMJ() {
     if (read_thread_.joinable()) {
         read_thread_.join();
     }
+    if (d_) mj_deleteData(d_);
+    if (m_) mj_deleteModel(m_);
 }
 
 // ==========================================================================
@@ -209,7 +211,6 @@ bool HardwareMJ::init() {
 }
 
 void HardwareMJ::close() {
-    if (!running_.load()) return;
     running_.store(false);
     if (render_thread_.joinable()) render_thread_.join();
 }
@@ -292,12 +293,7 @@ void HardwareMJ::renderLoop() {
         opt_.tendongroup[g]  = 1;
         opt_.actuatorgroup[g] = 1;
     }
-    cam_.distance  = 3.0;
-    cam_.azimuth   = 130.0;
-    cam_.elevation = -20.0;
-    cam_.lookat[0] = 0.0;
-    cam_.lookat[1] = 0.0;
-    cam_.lookat[2] = 0.5;
+    mjv_defaultFreeCamera(m_, &cam_);
 
     mjv_makeScene(m_, &scn_, 2000);
     mjr_makeContext(m_, &con_, 200);
@@ -305,8 +301,6 @@ void HardwareMJ::renderLoop() {
     menu_ = std::make_unique<SimulationMenu>(m_);
 
     // ---- 4. 发出就绪信号，进入渲染循环 ----------------------------------
-    ready_.store(true);
-
     // 先把初始状态同步到 sim_ 缓冲区
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -316,6 +310,8 @@ void HardwareMJ::renderLoop() {
             sim_trq_[i] = 0.0;
         }
     }
+
+    ready_.store(true);
 
     while (!glfwWindowShouldClose(window_) && running_.load()) {
         if (physics_enabled_.load()) {
@@ -342,16 +338,17 @@ void HardwareMJ::renderLoop() {
                 }
             }
         } else {
-            // 外部驱动模式：物理由 MujocoSimulator::step() 同步执行。
-            // 渲染线程只从 cmd_pos_ 获取显示位姿，做 mj_forward 更新场景。
-            // mj_forward 必须在锁内执行 —— 与 MujocoSimulator::step() 竞争 d_。
-            {
-                std::lock_guard<std::mutex> lk(mtx_);
-                int nq = std::min(m_->nq, static_cast<int>(cmd_pos_.size()));
-                for (int i = 0; i < nq; ++i) {
-                    d_->qpos[i] = cmd_pos_[i];
-                }
-                mj_forward(m_, d_);  // 仅前向运动学，不做动力学积分
+            // The simulator owns physics and qpos in external mode. Rendering
+            // must never restore a stale command buffer over a newer step.
+            std::lock_guard<std::mutex> lk(mtx_);
+            mj_forward(m_, d_);
+            for (int joint = 0; joint < m_->njnt; ++joint) {
+                if (m_->jnt_type[joint] != mjJNT_HINGE &&
+                    m_->jnt_type[joint] != mjJNT_SLIDE) continue;
+                const int dof = m_->jnt_dofadr[joint];
+                sim_pos_[dof] = d_->qpos[m_->jnt_qposadr[joint]];
+                sim_vel_[dof] = d_->qvel[dof];
+                sim_trq_[dof] = d_->qfrc_actuator[dof] + d_->qfrc_applied[dof];
             }
         }
 
@@ -365,6 +362,7 @@ void HardwareMJ::renderLoop() {
         // ---- 外力可视化 ----------------------------------------------------
         if (force_state_.active && force_state_.body_id >= 0 &&
             force_state_.body_id < m_->nbody) {
+            std::lock_guard<std::mutex> lock(mtx_);
             int b = force_state_.body_id;
 
             // 更新受力点的世界坐标（从 body-local 转换）
@@ -435,7 +433,11 @@ void HardwareMJ::renderLoop() {
         }
         menu_->Render(framebuffer_width, framebuffer_height);
         glfwSwapBuffers(window_);
-        glfwPollEvents();
+        {
+            // Callbacks read mjData and change the force used by the physics loop.
+            std::lock_guard<std::mutex> lock(mtx_);
+            glfwPollEvents();
+        }
     }
 
     // ---- 5. 清理 ---------------------------------------------------------
@@ -444,8 +446,7 @@ void HardwareMJ::renderLoop() {
     menu_.reset();
     mjv_freeScene(&scn_);
     mjr_freeContext(&con_);
-    mj_deleteData(d_);   d_ = nullptr;
-    mj_deleteModel(m_);  m_ = nullptr;
+    // Model/data remain alive until the owner has stopped the simulation loop.
     glfwDestroyWindow(window_);
     glfwTerminate();
     window_ = nullptr;
@@ -688,7 +689,7 @@ void HardwareMJ::cbKeyboard(GLFWwindow *w, int key, int, int act, int /*mods*/) 
 
     switch (key) {
     case GLFW_KEY_BACKSPACE:
-        mjv_defaultCamera(&p->cam_);
+        mjv_defaultFreeCamera(p->m_, &p->cam_);
         break;
     case GLFW_KEY_ESCAPE:
         if (p->force_state_.active)
