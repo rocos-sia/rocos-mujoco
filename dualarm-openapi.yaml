@@ -1,20 +1,17 @@
-# Local dual-arm implementation contract; not published to online Apifox.
 openapi: 3.1.0
 info:
   title: ROCOS DualArm API — 独立双臂控制
-  version: 0.4.1-local
+  version: 0.5.0-local
   description: '本文件对应 rocos-app 的 dualarm 分支本地实现，可作为独立 OpenAPI YAML 导入 Apifox。
 
     rocosDualArmMain 已提供本文件列出的路由；尚未发布到在线 Apifox，不替代在线 ROCOS API 的单臂契约。
 
     文档版本独立于 App/MuJoCo 产品版本、共享内存 ABI 及上游 API 版本。
 
-    肩部试验配置 app_shoulder.yaml：左/右求解基坐标分别为 left_base/right_base；原 app.yaml 仍为公共 base_link。
-    BASE 和 reference_frame=base 均指当前臂配置中的 base_link，应从 /api/arms 或 /api/workcell/model 确认，不能由端口推断。
-    试验版仅平移原点：旧公共基座到左肩的平移为 [0.011578,-0.063,0.091501] m，到右肩为 [0.011578,-0.267,0.091501] m，轴方向不变。
-    旧基座表达的位置需减去相应偏移，方向不变；不自动转换旧目标、工件坐标或持久化文件。法兰相对 TCP/工具安装/负载质心不做该平移。
-    MoveJ_IK 当前接收求解基坐标下的法兰目标；MoveL 接收求解基坐标下的所选工具目标。两者不可混用。
-    接口格式保持不变，不增加 WORLD 输入或跨臂目标自动转换。
+    肩部试验配置 app_shoulder.yaml：左/右求解基坐标分别为 left_base/right_base；原 app.yaml 仍为公共 base_link。 BASE 和 reference_frame=base
+    均指当前臂配置中的 base_link，应从 /api/arms 或 /api/workcell/model 确认，不能由端口推断。 试验版仅平移原点：旧公共基座到左肩的平移为 [0.011578,-0.063,0.091501]
+    m，到右肩为 [0.011578,-0.267,0.091501] m，轴方向不变。 旧基座表达的位置需减去相应偏移，方向不变；不自动转换旧目标、工件坐标或持久化文件。法兰相对 TCP/工具安装/负载质心不做该平移。
+    MoveJ_IK 当前接收求解基坐标下的法兰目标；MoveL 接收求解基坐标下的所选工具目标。两者不可混用。 接口格式保持不变，不增加 WORLD 输入或跨臂目标自动转换。
 
 
     目标：一个 rocosDualArmMain 进程、一个 HTTP 监听端口、一份双臂入口配置、两个独立 Robot。
@@ -84,7 +81,14 @@ info:
 
 
     本地日志扩展：/api/dualarm/logs 与 /api/dualarm/logs/stream 位于独立诊断服务 8082；原 /api/logs 告警格式保持不变。/api/logs/file/latest
-    返回当前进程文件快照，双臂模式文件行含 arm/ecat_id；轮转历史不在本接口范围。仅更新此本地 YAML，未发布在线 Apifox。'
+    返回当前进程文件快照，双臂模式文件行含 arm/ecat_id；轮转历史不在本接口范围。仅更新此本地 YAML，未发布在线 Apifox。
+
+    命令追踪协议 1：acquire/heartbeat 提交 command_protocol=1 后，该控制会话的运动必须携带 instance_id、motion_epoch，四种精确运动还需
+    command_id。停止原子提升当前臂代次，旧代次请求不能执行。未协商的旧双臂客户端保持原请求格式；单臂契约不变。
+
+    请求超时不代表取消；使用 command_status 查询原 command_id，或发送停止并核对新代次及静止反馈。浏览器不得仅按等待时间自动解锁未知结果。
+
+    命令业务码：4101 旧运动代次；4102 命令 ID 冲突；4103 结果未知/不可读；4104 当前代次记录已满；4105 App 实例变化。'
 servers:
 - url: http://127.0.0.1:8080
   description: 双臂 HTTP 默认地址；需先启动 MuJoCo 和 rocosDualArmMain
@@ -217,7 +221,9 @@ paths:
         当前实现增加 data.rci，内容与 /api/robot/rci/status 的 data 一致。RCI 状态在处理请求时另行读取，其采样时刻可能与其余机器人状态快照存在差异。
 
 
-        robot_state 枚举新增 RCI。FSM 状态、control_active、motion_busy 和 rci 来自同一次受锁读取。RCI 待命 control_active=true、motion_busy=false、rci.control_active=false。关节反馈和周期伺服诊断沿用各自采样语义。'
+        robot_state 枚举新增 RCI。FSM 状态、control_active、motion_busy 和 rci 来自同一次受锁读取。RCI 待命 control_active=true、motion_busy=false、rci.control_active=false。关节反馈和周期伺服诊断沿用各自采样语义。
+
+        双臂状态增加 instance_id、motion_epoch、state_seq、command。timestamp 仅用于墙上时间显示；排序与新鲜度使用实例和快照序号。App 重启后实例改变，不得将新实例的静止状态作为旧命令完成证明。'
       tags:
       - 按臂状态
       parameters: []
@@ -531,14 +537,16 @@ paths:
 
         成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
 
-        两臂同时调用 MoveJ 是两个独立任务；不保证共同启动或共同结束。成功响应不新增 task_id；使用 state/move_status 查询当前运动。
+        两臂同时调用 MoveJ 是两个独立任务；不保证共同启动或共同结束。不生成单臂 task_id；协议 1 使用 command_id 追踪本次请求。
 
 
         继承的单臂契约：
 
 
 
-        RCI 待命、RCI 伺服及关闭过程中拒绝竞争入口，返回状态冲突。退出 RCI 并取得有效 HTTP 控制权后才可再次执行。'
+        RCI 待命、RCI 伺服及关闭过程中拒绝竞争入口，返回状态冲突。退出 RCI 并取得有效 HTTP 控制权后才可再次执行。
+
+        协议 1 控制会话必须携带当前 instance_id 和 motion_epoch，缺少字段返回 1001，旧实例返回 4105，旧代次返回 4101 且不会执行。'
       tags:
       - 按臂运动
       parameters: []
@@ -565,6 +573,18 @@ paths:
                 jerk:
                   type: number
                   default: 10
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+                motion_epoch:
+                  type: integer
+                  minimum: 1
+                  description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
+                command_id:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  description: 协议 1 必填，由客户端生成。相同 ID/代次/操作/请求体只执行一次并返回已记录结果；改变请求体返回 4102。当前代次最多保留 256 个
+                    ID，满时返回 4104；停止提升代次后可清理旧记录。
             examples:
               leftExample:
                 summary: left 路径下的 7 轴示例，单位 rad
@@ -784,12 +804,14 @@ paths:
 
         成功字段及单位继承下述单臂契约；业务失败检查 success/code/message，不以 HTTP 200 判断成功。
 
-        返回后通过该臂状态确认终态；不把重复请求一律视为成功，保留单臂状态机对非法状态的拒绝。
+        返回后通过该臂状态确认终态；空闲时停止也成功建立取消代次；运动中仍检查实际停止结果。
 
 
         继承的单臂契约：
 
-        '
+
+        经鉴权后原子提升本臂 motion_epoch，再停止当前运动；迟到的旧代次运动不可执行。协议 1 必须携带当前 instance_id；停止不要求旧代次仍匹配。成功响应代表停止/取消已受理，仍须用更大
+        state_seq、对应实例和静止反馈确认，不能仅凭 HTTP 响应判断物理停止。'
       tags:
       - 按臂运动
       parameters: []
@@ -835,6 +857,16 @@ paths:
       operationId: dualarm_post_robot_stop
       x-implementation-status: implemented-local
       x-upstream-path: /api/robot/stop
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+              description: 协议 1 控制会话必填 instance_id；旧会话仍允许空对象。
     parameters:
     - $ref: '#/components/parameters/Arm'
   /api/arms/{arm}/robot/move_status:
@@ -909,7 +941,9 @@ paths:
         继承的单臂契约：
 
         无持有者或原持有者已超时时颁发新 token。已有有效持有者时返回 3008。控制权绑定 token 和 client_id，不绑定 TCP 源端口。默认 TTL 300 秒，可由 http_control_ttl_seconds
-        配置；以响应 ttl_seconds 为准。持有者应按 heartbeat_interval_seconds 发送带两个鉴权头的心跳。普通 GET 不续期。'
+        配置；以响应 ttl_seconds 为准。持有者应按 heartbeat_interval_seconds 发送带两个鉴权头的心跳。普通 GET 不续期。
+
+        命令追踪：提交 command_protocol=1 启用代次防护；响应同时返回 instance_id、motion_epoch、state_seq、command_protocol。'
       tags:
       - 按臂控制权
       parameters: []
@@ -925,6 +959,12 @@ paths:
                 client_id:
                   type: string
                   description: 稳定的客户端会话 ID；浏览器端口变化时可保持同一用户/会话持有 token
+                command_protocol:
+                  type: integer
+                  enum:
+                  - 0
+                  - 1
+                  description: 提交 1 启用命令追踪与停止代次校验。已有 token 可通过 heartbeat 升级；不允许降级。
             examples:
               client:
                 summary: 同一客户端可分别申请左右臂
@@ -1060,7 +1100,9 @@ paths:
 
         继承的单臂契约：
 
-        校验 token、client_id 和有效期，成功后续期。默认建议每 5 秒发送；以响应 heartbeat_interval_seconds 为准。旧 token 过期或被接管后不可通过心跳恢复。调试旁路凭据不能用于心跳。此接口不改变机器人运动状态。'
+        校验 token、client_id 和有效期，成功后续期。默认建议每 5 秒发送；以响应 heartbeat_interval_seconds 为准。旧 token 过期或被接管后不可通过心跳恢复。调试旁路凭据不能用于心跳。此接口不改变机器人运动状态。
+
+        命令追踪：提交 command_protocol=1 启用代次防护；响应同时返回 instance_id、motion_epoch、state_seq、command_protocol。'
       tags:
       - 按臂控制权
       parameters: []
@@ -1069,7 +1111,12 @@ paths:
           application/json:
             schema:
               type: object
-              properties: {}
+              properties:
+                command_protocol:
+                  type: integer
+                  enum:
+                  - 1
+                  description: 提交 1 启用命令追踪与停止代次校验。已有 token 可通过 heartbeat 升级；不允许降级。
       responses:
         '200':
           description: 心跳结果；业务失败仍可能返回 HTTP 200
@@ -1370,7 +1417,8 @@ paths:
 
         上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
 
-        '
+
+        协议 1 控制会话必须携带当前 instance_id 和 motion_epoch，缺少字段返回 1001，旧实例返回 4105，旧代次返回 4101 且不会执行。'
       tags:
       - 空间运动控制 (Motion)
       parameters: []
@@ -1393,6 +1441,18 @@ paths:
                 jerk:
                   type: number
                   default: 10
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+                motion_epoch:
+                  type: integer
+                  minimum: 1
+                  description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
+                command_id:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  description: 协议 1 必填，由客户端生成。相同 ID/代次/操作/请求体只执行一次并返回已记录结果；改变请求体返回 4102。当前代次最多保留 256 个
+                    ID，满时返回 4104；停止提升代次后可清理旧记录。
         required: true
       responses:
         '200':
@@ -1426,7 +1486,9 @@ paths:
 
 
 
-        RCI 待命、RCI 伺服及关闭过程中拒绝竞争入口，返回状态冲突。退出 RCI 并取得有效 HTTP 控制权后才可再次执行。'
+        RCI 待命、RCI 伺服及关闭过程中拒绝竞争入口，返回状态冲突。退出 RCI 并取得有效 HTTP 控制权后才可再次执行。
+
+        协议 1 控制会话必须携带当前 instance_id 和 motion_epoch，缺少字段返回 1001，旧实例返回 4105，旧代次返回 4101 且不会执行。'
       tags:
       - 空间运动控制 (Motion)
       parameters: []
@@ -1452,6 +1514,18 @@ paths:
                 jerk:
                   type: number
                   default: 10
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+                motion_epoch:
+                  type: integer
+                  minimum: 1
+                  description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
+                command_id:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  description: 协议 1 必填，由客户端生成。相同 ID/代次/操作/请求体只执行一次并返回已记录结果；改变请求体返回 4102。当前代次最多保留 256 个
+                    ID，满时返回 4104；停止提升代次后可清理旧记录。
         required: true
       responses:
         '200':
@@ -1483,7 +1557,8 @@ paths:
 
         上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
 
-        '
+
+        协议 1 控制会话必须携带当前 instance_id 和 motion_epoch，缺少字段返回 1001，旧实例返回 4105，旧代次返回 4101 且不会执行。'
       tags:
       - 空间运动控制 (Motion)
       parameters: []
@@ -1512,6 +1587,18 @@ paths:
                 jerk:
                   type: number
                   default: 10
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+                motion_epoch:
+                  type: integer
+                  minimum: 1
+                  description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
+                command_id:
+                  type: string
+                  pattern: ^[A-Za-z0-9_.:-]{1,128}$
+                  description: 协议 1 必填，由客户端生成。相同 ID/代次/操作/请求体只执行一次并返回已记录结果；改变请求体返回 4102。当前代次最多保留 256 个
+                    ID，满时返回 4104；停止提升代次后可清理旧记录。
         required: true
       responses:
         '200':
@@ -1544,7 +1631,9 @@ paths:
 
         上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
 
-        传入与关节数等长的方向向量，每个元素为该关节的速度方向'
+        传入与关节数等长的方向向量，每个元素为该关节的速度方向
+
+        协议 1 控制会话必须携带当前 instance_id 和 motion_epoch，缺少字段返回 1001，旧实例返回 4105，旧代次返回 4101 且不会执行。'
       tags:
       - 点动控制 (Jogging)
       parameters: []
@@ -1577,6 +1666,13 @@ paths:
                 dir_threshold:
                   type: number
                   default: 0.99
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+                motion_epoch:
+                  type: integer
+                  minimum: 1
+                  description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
         required: true
       responses:
         '200':
@@ -1612,7 +1708,8 @@ paths:
         传入 6 维 twist 向量 [vx, vy, vz, wx, wy, wz]，前 3 个为线速度，后 3 个为角速度。 可通过 frame 参数指定参考坐标系；Robot 层会将 FLANGE/TOOL/OBJECT
         下的 twist 旋转到 BASE 后执行。
 
-        '
+
+        协议 1 控制会话必须携带当前 instance_id 和 motion_epoch，缺少字段返回 1001，旧实例返回 4105，旧代次返回 4101 且不会执行。'
       tags:
       - 点动控制 (Jogging)
       parameters: []
@@ -1658,6 +1755,13 @@ paths:
                 dir_threshold:
                   type: number
                   default: 0.99
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+                motion_epoch:
+                  type: integer
+                  minimum: 1
+                  description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
         required: true
       responses:
         '200':
@@ -1690,7 +1794,9 @@ paths:
 
         上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
 
-        传入与关节数等长的方向向量，在不影响末端位姿的零空间内运动'
+        传入与关节数等长的方向向量，在不影响末端位姿的零空间内运动
+
+        协议 1 控制会话必须携带当前 instance_id 和 motion_epoch，缺少字段返回 1001，旧实例返回 4105，旧代次返回 4101 且不会执行。'
       tags:
       - 点动控制 (Jogging)
       parameters: []
@@ -1722,6 +1828,13 @@ paths:
                 dir_threshold:
                   type: number
                   default: 0.99
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+                motion_epoch:
+                  type: integer
+                  minimum: 1
+                  description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
         required: true
       responses:
         '200':
@@ -1754,7 +1867,9 @@ paths:
 
         上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
 
-        传入各维度的速度标量数组'
+        传入各维度的速度标量数组
+
+        协议 1 控制会话必须携带当前 instance_id 和 motion_epoch，缺少字段返回 1001，旧实例返回 4105，旧代次返回 4101 且不会执行。'
       tags:
       - 点动控制 (Jogging)
       parameters: []
@@ -1777,6 +1892,13 @@ paths:
                 dir_threshold:
                   type: number
                   default: 0.99
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+                motion_epoch:
+                  type: integer
+                  minimum: 1
+                  description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
         required: true
       responses:
         '200':
@@ -1809,7 +1931,9 @@ paths:
 
         上游语义参考（如与上述明确差异冲突，双臂适配按上述限制执行）：
 
-        '
+
+        经鉴权后原子提升本臂 motion_epoch，再停止当前运动；迟到的旧代次运动不可执行。协议 1 必须携带当前 instance_id；停止不要求旧代次仍匹配。成功响应代表停止/取消已受理，仍须用更大
+        state_seq、对应实例和静止反馈确认，不能仅凭 HTTP 响应判断物理停止。'
       tags:
       - 点动控制 (Jogging)
       parameters: []
@@ -1832,6 +1956,16 @@ paths:
         ClientId: []
       operationId: dualarm_post_jog_stop
       x-implementation-status: implemented-local
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                instance_id:
+                  type: string
+                  description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+              description: 协议 1 控制会话必填 instance_id；旧会话仍允许空对象。
     parameters:
     - $ref: '#/components/parameters/Arm'
   /api/arms/{arm}/robot/tool_frames:
@@ -2895,7 +3029,9 @@ paths:
         上游契约：
 
         只读查询，不需要控制权。返回六个槽位的样本、数量和可空结果；缺少 ID 返回 1001，会话失效/重启/被淘汰返回 4004。应在页面重新进入时回读。不能用旧控制令牌的本地草稿恢复新控制会话；采集和计算仍要求创建者令牌。
-        返回采集时固定的 package_digest/package_revision。'
+        返回采集时固定的 package_digest/package_revision。
+
+        刷新可使用同一控制 token、同一 App 实例保存的 session_id 回读采点；saved 和 max_error 均以服务端返回为准，浏览器不得缓存样本替代真实反馈。'
       tags:
       - 按臂六点标定
       parameters:
@@ -3554,6 +3690,38 @@ paths:
             default: 127.0.0.1
           diagnosticsPort:
             default: '8082'
+  /api/arms/{arm}/robot/command_status:
+    parameters:
+    - $ref: '#/components/parameters/Arm'
+    get:
+      summary: 指定臂：查询原 command_id 的受理与执行结果
+      operationId: dualarm_get_command_status
+      tags:
+      - 按臂运动
+      x-implementation-status: implemented-local
+      description: 带本臂 ControlToken 与 ClientId 查询，验证成功会续期控制权。只返回由该 token 创建的记录；未知、已清理、重启后不存在或属于其他臂/所有者的
+        ID 返回 4103。4103 不能证明请求未到达或已取消，应保持结果未知，或通过停止提升代次后确认静止。X-Rocos-Request-Id 是每次 HTTP 请求标识，command_id
+        是运动关联标识，二者不能混用。
+      security:
+      - ControlToken: []
+        ClientId: []
+      parameters:
+      - name: command_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+      responses:
+        '200':
+          description: HTTP 200，检查 success/code；4103 保持未知。
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MotionCommandStatusResponse'
+                - $ref: '#/components/schemas/DualArmBusinessError'
 components:
   parameters:
     Arm:
@@ -3670,6 +3838,26 @@ components:
           - type: 'null'
         rci:
           $ref: '#/components/schemas/RciStatusData'
+        instance_id:
+          type: string
+          description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+        motion_epoch:
+          type: integer
+          minimum: 1
+          description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
+        state_seq:
+          type: integer
+          minimum: 1
+          description: 该臂本实例内新发布状态快照序号；state/command_status 采样时递增，不依赖墙上时间。控制/写响应为最近发布序号。
+        command:
+          oneOf:
+          - $ref: '#/components/schemas/MotionCommandRecord'
+          - type: 'null'
+          description: 最近一次受追踪的精确运动；其他命令可按 command_id 单独查询。
+      required:
+      - instance_id
+      - motion_epoch
+      - state_seq
     RciStatusData:
       type: object
       description: RCI 入口、活动会话、机器人状态和伺服诊断。
@@ -4036,6 +4224,22 @@ components:
               motion_busy:
                 type: boolean
                 description: WaitMove 专用
+              instance_id:
+                type: string
+                description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+              motion_epoch:
+                type: integer
+                minimum: 1
+                description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
+              state_seq:
+                type: integer
+                minimum: 0
+                description: 该臂本实例内新发布状态快照序号；state/command_status 采样时递增，不依赖墙上时间。控制/写响应为最近发布序号。
+              command:
+                oneOf:
+                - $ref: '#/components/schemas/MotionCommandRecord'
+                - type: 'null'
+                description: 最近一次受追踪的精确运动；其他命令可按 command_id 单独查询。
     MoveStatusData:
       type: object
       properties:
@@ -4098,6 +4302,28 @@ components:
         client_id_auto:
           type: boolean
           description: 服务端自动生成 client_id 时为 true
+        instance_id:
+          type: string
+          description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+        motion_epoch:
+          type: integer
+          minimum: 1
+          description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
+        state_seq:
+          type: integer
+          minimum: 0
+          description: 该臂本实例内新发布状态快照序号；state/command_status 采样时递增，不依赖墙上时间。控制/写响应为最近发布序号。
+        command:
+          oneOf:
+          - $ref: '#/components/schemas/MotionCommandRecord'
+          - type: 'null'
+          description: 最近一次受追踪的精确运动；其他命令可按 command_id 单独查询。
+        command_protocol:
+          type: integer
+          enum:
+          - 0
+          - 1
+          description: 该持有者已协商的命令协议；0 为旧客户端格式，1 强制校验取消代次与命令 ID。
     JointState:
       type: object
       properties:
@@ -4402,6 +4628,12 @@ components:
             tool_package_calibration:
               type: boolean
               const: true
+            command_protocol:
+              type: integer
+              const: 1
+        instance_id:
+          type: string
+          description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
     ArmsResponse:
       allOf:
       - $ref: '#/components/schemas/StandardResponse'
@@ -4723,6 +4955,14 @@ components:
         package_revision:
           type: integer
           description: 采集时的安装定义 revision；普通工具为 0
+        saved:
+          type: boolean
+          description: 服务端确认本会话当前解已成功保存；重采/重算即清除。
+        max_error:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 0.05
+          description: 最近计算使用的最大允许误差，单位 m；恢复界面时用于核对阈值。
       required:
       - session_id
       - name
@@ -5023,6 +5263,75 @@ components:
       - code
       - message
       - data
+    MotionCommandRecord:
+      type: object
+      required:
+      - command_id
+      - motion_epoch
+      - operation
+      - status
+      - success
+      - code
+      - message
+      properties:
+        command_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        motion_epoch:
+          type: integer
+          minimum: 1
+        operation:
+          type: string
+          enum:
+          - movej
+          - movej_ik
+          - movel
+          - movel_fk
+        status:
+          type: string
+          enum:
+          - planning
+          - accepted
+          - running
+          - paused
+          - stopping
+          - finished
+          - stopped
+          - failed
+          - rejected
+          description: finished 表示已受理且随后静止，客户端仍需验证目标偏差；stopped 表示停止后的静止确认。
+        success:
+          type: boolean
+          description: 原请求的受理结果，不代表已到达目标；planning 时暂为 false。
+        code:
+          type: integer
+        message:
+          type: string
+    MotionCommandStatusResponse:
+      allOf:
+      - $ref: '#/components/schemas/StandardResponse'
+      - type: object
+        properties:
+          data:
+            type: object
+            properties:
+              instance_id:
+                type: string
+                description: 本次双臂 App 启动实例标识；重启后改变，两臂相同。
+              motion_epoch:
+                type: integer
+                minimum: 1
+                description: 当前臂运动代次；每次经鉴权的 stop/jog/stop 均递增，包括空闲时停止。
+              state_seq:
+                type: integer
+                minimum: 0
+                description: 该臂本实例内新发布状态快照序号；state/command_status 采样时递增，不依赖墙上时间。控制/写响应为最近发布序号。
+              command:
+                oneOf:
+                - $ref: '#/components/schemas/MotionCommandRecord'
+                - type: 'null'
+                description: 最近一次受追踪的精确运动；其他命令可按 command_id 单独查询。
   securitySchemes:
     ControlToken:
       type: apiKey
