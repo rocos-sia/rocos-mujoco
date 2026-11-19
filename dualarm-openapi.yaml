@@ -2,12 +2,19 @@
 openapi: 3.1.0
 info:
   title: ROCOS DualArm API — 独立双臂控制
-  version: 0.4.0-local
+  version: 0.4.1-local
   description: '本文件对应 rocos-app 的 dualarm 分支本地实现，可作为独立 OpenAPI YAML 导入 Apifox。
 
     rocosDualArmMain 已提供本文件列出的路由；尚未发布到在线 Apifox，不替代在线 ROCOS API 的单臂契约。
 
     文档版本独立于 App/MuJoCo 产品版本、共享内存 ABI 及上游 API 版本。
+
+    肩部试验配置 app_shoulder.yaml：左/右求解基坐标分别为 left_base/right_base；原 app.yaml 仍为公共 base_link。
+    BASE 和 reference_frame=base 均指当前臂配置中的 base_link，应从 /api/arms 或 /api/workcell/model 确认，不能由端口推断。
+    试验版仅平移原点：旧公共基座到左肩的平移为 [0.011578,-0.063,0.091501] m，到右肩为 [0.011578,-0.267,0.091501] m，轴方向不变。
+    旧基座表达的位置需减去相应偏移，方向不变；不自动转换旧目标、工件坐标或持久化文件。法兰相对 TCP/工具安装/负载质心不做该平移。
+    MoveJ_IK 当前接收求解基坐标下的法兰目标；MoveL 接收求解基坐标下的所选工具目标。两者不可混用。
+    接口格式保持不变，不增加 WORLD 输入或跨臂目标自动转换。
 
 
     目标：一个 rocosDualArmMain 进程、一个 HTTP 监听端口、一份双臂入口配置、两个独立 Robot。
@@ -4348,6 +4355,7 @@ components:
           description: 该臂的 API 前缀，如 /api/arms/left
         base_link: &id003
           type: string
+          description: 当前臂求解基坐标 link；原配置为 base_link，肩部试验配置分别为 left_base/right_base。
         tip_link: &id004
           type: string
         joint_names: &id001
@@ -4525,7 +4533,7 @@ components:
         reference_frame:
           type: string
           const: base
-          description: 位姿统一相对基坐标系表达
+          description: 位姿相对当前臂配置中的求解基坐标系表达；肩部试验版分别为 left_base/right_base，非 MuJoCo 世界坐标。
     LoadParametersData:
       type: object
       properties:

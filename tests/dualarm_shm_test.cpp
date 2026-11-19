@@ -20,6 +20,8 @@ namespace rocos_mujoco {
 struct SimulatorTestAccess {
   static const mjModel* Model(const MujocoSimulator& sim) { return sim.m_; }
   static const mjData* Data(const MujocoSimulator& sim) { return sim.d_; }
+  static mjData* MutableData(MujocoSimulator& sim) { return sim.d_; }
+  static mjModel* MutableModel(MujocoSimulator& sim) { return sim.m_; }
 };
 }  // namespace rocos_mujoco
 
@@ -29,7 +31,7 @@ using rocos_mujoco::MasterConfig;
 using rocos_mujoco::MujocoSimulator;
 using rocos_mujoco::SimulatorTestAccess;
 const std::string kRoot = ROCOS_SOURCE_DIR;
-const std::string kModel = kRoot + "/config/dualarm/mjcf/scene.xml";
+std::string kModel = kRoot + "/config/dualarm/mjcf/scene.xml";
 constexpr double kCounts = 1000000.0;
 
 void Check(bool condition, const std::string& message) {
@@ -191,9 +193,60 @@ void TestDualControl(int id) {
   Check(std::abs(Position(right, 0) + 0.065) < 0.005,
         "right moves with left disabled");
   for (int i = 0; i < 7; ++i) {
-    Check(std::abs(Position(left, i) - held[i]) < 0.04, "disabled left holds");
+    Check(std::abs(Position(left, i) - held[i]) < 2e-6, "disabled left brake holds");
   }
   CheckPhysics(sim, steps);
+}
+
+void TestBrakeAndReenable(int id) {
+  MujocoSimulator sim(kModel, Masters(id));
+  Check(sim.initialize(), "brake test initializes");
+  SharedMemoryConfig left(id), right(id + 1);
+  Check(left.connect() && right.connect(), "isolated brake clients connect");
+  auto* model = SimulatorTestAccess::MutableModel(sim);
+  auto* data = SimulatorTestAccess::MutableData(sim);
+  for (int a = 0; a < model->nu; ++a) {
+    Check(model->actuator_gainprm[a * mjNGAIN] == 20000 &&
+              model->actuator_biasprm[a * mjNBIAS + 2] == -500 &&
+              !model->actuator_forcelimited[a], "talon actuator settings");
+    // A brake must not rely on the high position-loop stiffness.
+    model->actuator_gainprm[a * mjNGAIN] = 20;
+    model->actuator_biasprm[a * mjNBIAS + 1] = -20;
+    model->actuator_biasprm[a * mjNBIAS + 2] = -1;
+  }
+  const int tip = mj_name2id(model, mjOBJ_BODY, "Left_Link7");
+  data->xfrc_applied[6 * tip + 2] = -50;
+  for (int k = 0; k < 1000; ++k) sim.step();
+  for (int j = 0; j < 14; ++j) {
+    Check(std::abs(data->qpos[j]) < 1e-12 && data->qvel[j] == 0,
+          "startup brake resists gravity and external force");
+  }
+  data->xfrc_applied[6 * tip + 2] = 0;
+  Enable(sim, left);
+  Target(left, 0, 0.2);
+  for (int k = 0; k < 100; ++k) sim.step();
+  Check(std::abs(data->qvel[0]) > 1e-3, "disable test starts in motion");
+  const std::vector<double> held(data->qpos, data->qpos + 7);
+  Control(left, 0);
+  for (int k = 0; k < 500; ++k) sim.step();
+  for (int j = 0; j < 7; ++j) {
+    Check(data->qpos[j] == held[j] && data->qvel[j] == 0,
+          "brake latches this transition, with no residual motion");
+    // App must synchronize the target before enabling; simulator never writes
+    // into the controller-owned output PDO region.
+    Target(left, j, Position(left, j));
+  }
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    Enable(sim, left);
+    for (int k = 0; k < 500; ++k) sim.step();
+    for (int j = 0; j < 7; ++j) {
+      Check(std::abs(data->qpos[j] - held[j]) < 3e-6,
+            "fresh enable target holds without returning to stale target");
+      Check(data->qpos[j + 7] == 0, "other arm stays braked");
+    }
+    Control(left, 0);
+    sim.step();
+  }
 }
 
 void TestValidationAndCleanup(int id) {
@@ -232,6 +285,32 @@ void TestValidationAndCleanup(int id) {
   SharedMemoryConfig left(id), right(id + 1);
   Check(!left.connect(true) && !right.connect(true),
         "both buses removed on shutdown");
+}
+
+void TestTalonHold(int id) {
+  MujocoSimulator sim(kRoot + "/config/talon/mjcf/scene.xml",
+                      kRoot + "/config/talon/hardware.yaml", id);
+  Check(sim.initialize(), "single-arm talon initializes");
+  SharedMemoryConfig client(id);
+  Check(client.connect(), "single-arm client connects");
+  auto* data = SimulatorTestAccess::MutableData(sim);
+  data->qpos[1] = 0.4;  // Nonzero gravity torque, unlike the upright zero pose.
+  for (int k = 0; k < 500; ++k) sim.step();
+  Check(data->qpos[1] == 0.4 && data->qvel[1] == 0,
+        "single-arm brake holds under gravity");
+  for (int j = 0; j < 7; ++j) {
+    client.setSlaveOutputVarValueByName<int32_t>(j, "Target Position",
+        client.getSlaveInputVarValueByName<int32_t>(j, "Position actual value"));
+  }
+  Enable(sim, client);
+  for (int k = 0; k < 500; ++k) sim.step();
+  Check(std::abs(data->qpos[1] - 0.4) < 1e-5, "talon enable holds fresh target");
+  for (int k = 0; k < 1000; ++k) {
+    client.setSlaveOutputVarValueByName<int32_t>(1, "Target Position",
+        std::lround((0.4 + 0.05 * std::min(1.0, k / 500.0)) * 156455.678));
+    sim.step();
+  }
+  Check(std::abs(data->qpos[1] - 0.45) < 1e-5, "talon CSP motion still tracks");
 }
 
 // A deliberately reversed actuator order catches accidental use of DOF as ctrl
@@ -273,12 +352,17 @@ void TestActuatorOrder(int id) {
 }
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   try {
+    if (argc == 2 && std::string(argv[1]) == "--shoulder") {
+      kModel = kRoot + "/config/dualarm/mjcf/scene_shoulder.xml";
+    }
     const int id = 30000000 + getpid() * 10;
     TestDualControl(id);
     TestValidationAndCleanup(id + 2);
     TestActuatorOrder(id + 4);
+    TestBrakeAndReenable(id + 6);
+    TestTalonHold(id + 8);
     std::cout << "Dual-arm control, isolation, mapping and lifecycle passed\n";
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

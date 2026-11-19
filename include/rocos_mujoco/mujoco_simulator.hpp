@@ -140,6 +140,7 @@ private:
     void readCommands(MasterState& master);
     void applyControl(MasterState& master);
     void stepPhysics();
+    void enforceBrakes();
     void writeSensorData(MasterState& master);
 
     void commandLoop(MasterState& master);
@@ -189,7 +190,7 @@ private:
 
         // 下使能时锁死的目标位置（记录下使能瞬间的 qpos）
         double hold_position{0.0};
-        bool   hold_valid{false};
+        bool   brake_active{false};  // Ideal simulation brake, not a motor PD hold.
 
         // 位置 PID 积分器（消除重力等持续扰动引起的稳态误差）
         double pos_integral{0.0};

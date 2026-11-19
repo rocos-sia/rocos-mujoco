@@ -1,0 +1,10 @@
+# One physics world, two independent ROCOS masters.
+model: scene_shoulder.xml
+masters:
+  - ecat_id: 0
+    hardware_config: ../hardware_left.yaml
+  - ecat_id: 1
+    hardware_config: ../hardware_right.yaml
+cycle_time_us: 1000.0
+duration_sec: -1.0
+visualize: false

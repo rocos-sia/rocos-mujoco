@@ -95,7 +95,7 @@
     <child
       link="Left_Link1" />
     <axis
-      xyz="0.99861 -0.035359 0.039057" />
+      xyz="-0.039081 0 0.99924" />
     <limit
       lower="-2.84"
       upper="2.84"

@@ -1,0 +1,11 @@
+# Shoulder origin, axes parallel to legacy base_link.
+schema_version: 1
+name: dualarm_right_shoulder_v1
+package_version: "1.0.0"
+urdf: ../urdf/dualarm_shoulder.urdf
+base_link: right_base
+tip_link: Right_Link7
+ecat_id: 1
+hardware_config: ../hardware_right.yaml
+master_type: mujoco
+master_config: master_right.yaml

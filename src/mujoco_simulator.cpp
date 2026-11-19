@@ -413,6 +413,7 @@ void MujocoSimulator::step() {
     for (auto& master : masters_) readCommands(*master);
     for (auto& master : masters_) applyControl(*master);
     stepPhysics();
+    enforceBrakes();
     for (auto& master : masters_) {
         writeSensorData(*master);
         updateCycleStats(*master);
@@ -794,17 +795,24 @@ void MujocoSimulator::applyControl(MasterState& master) {
         int dof = j.mj_joint_dof;
         if (dof < 0 || dof >= m_->nv) continue;
 
-        if (!j.cia.isEnabled()) {
-            // ---- 未使能：锁死或待在原地 ----
-            if (!j.hold_valid) {
+        const bool supported_mode = j.mode_of_operation == 6 ||
+            j.mode_of_operation == 8 || j.mode_of_operation == 9 ||
+            j.mode_of_operation == 10;
+        if (!j.cia.isEnabled() || !supported_mode) {
+            // Ideal brake: latch the actual position at this transition,
+            // not the previous cycle's position or a stale CSP target.
+            if (!j.brake_active) {
                 j.hold_position = d_->qpos[j.mj_joint_qpos];
-                j.hold_valid    = true;
             }
+            j.brake_active = true;
+            d_->qpos[j.mj_joint_qpos] = j.hold_position;
+            d_->qvel[dof] = 0.0;
             d_->ctrl[j.mj_actuator] = j.hold_position;
-            if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
+            d_->qfrc_applied[dof] = d_->qfrc_bias[dof];
             j.pos_integral = 0.0;  // 下使能时清零积分器
             continue;
         }
+        j.brake_active = false;
 
         // ---- 模式切换检测，清零积分器避免 windup --------------------------
         if (j.prev_mode_of_operation != j.mode_of_operation) {
@@ -819,7 +827,6 @@ void MujocoSimulator::applyControl(MasterState& master) {
         //   9  = CSV（速度）
         //   10 = CST（力矩）
 
-        bool update_hold_position = true;
         switch (j.mode_of_operation) {
         case 8:   // CSP — 位置控制
         case 6: { // Homing
@@ -862,23 +869,25 @@ void MujocoSimulator::applyControl(MasterState& master) {
             break;
         }
         default:
-            // 未知模式：待在原地
-            if (!j.hold_valid) {
-                j.hold_position = d_->qpos[j.mj_joint_qpos];
-                j.hold_valid    = true;
-            }
-            d_->ctrl[j.mj_actuator] = j.hold_position;
-            if (dof < m_->nv) d_->qfrc_applied[dof] = 0.0;
-            update_hold_position = false;
             break;
         }
+    }
+}
 
-        // 持续更新锁死位置
-        if (update_hold_position) {
-            j.hold_position = d_->qpos[j.mj_joint_qpos];
-            j.hold_valid    = true;
+void MujocoSimulator::enforceBrakes() {
+    bool active = false;
+    for (const auto& master : masters_) {
+        for (const auto& joint : master->joints) {
+            if (!joint.brake_active) continue;
+            active = true;
+            d_->qpos[joint.mj_joint_qpos] = joint.hold_position;
+            d_->qvel[joint.mj_joint_dof] = 0.0;
+            d_->qacc_warmstart[joint.mj_joint_dof] = 0.0;
         }
     }
+    // Publish FK/sensors for the locked state. This kinematic projection models
+    // an ideal brake; it does not model brake compliance or reaction torque.
+    if (active) mj_forward(m_, d_);
 }
 
 // ==========================================================================

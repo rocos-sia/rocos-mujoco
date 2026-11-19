@@ -35,7 +35,7 @@
       <geom name="base_link_collision" class="collision" mesh="base_link" pos="0 0 0" quat="1 0 0 0" />
       <body name="Left_Link1" pos="0.011578 -0.063 0.091501" quat="0.703366526568 -0.705693594099 0.0724768889655 0.0449352992397">
         <inertial pos="0.0130648751437856 -0.000823809675494613 0.0882154108705615" mass="2.64615506466597" fullinertia="0.00817474290746845 0.0078576103829338 0.00274456918914084 -4.9769875305494E-06 -0.000751073973324912 1.03702611580138E-05" />
-        <joint name="Left_Joint1" type="hinge" axis="0.99861 -0.035359 0.039057" range="-2.84 2.84" />
+        <joint name="Left_Joint1" type="hinge" axis="-0.039081 0 0.99924" range="-2.84 2.84" />
         <geom name="Left_Link1_visual" class="visual" mesh="Left_Link1" rgba="0.3 0.55 0.82 1" pos="0 0 0" quat="1 0 0 0" />
         <geom name="Left_Link1_collision" class="collision" mesh="Left_Link1" pos="0 0 0" quat="1 0 0 0" />
         <body name="Left_Link2" pos="-0.01509 0.00035359 0.13011" quat="0.0195442555536 -3.60071343549e-06 0.999808992783 -3.60071343549e-06">
@@ -125,19 +125,19 @@
     <exclude body1="base_link" body2="Right_Link1"/>
   </contact>
   <actuator>
-    <position name="Left_Joint1_position" joint="Left_Joint1" kp="2000" kv="100" ctrlrange="-2.84 2.84" forcerange="-30.0 30.0" />
-    <position name="Left_Joint2_position" joint="Left_Joint2" kp="2000" kv="100" ctrlrange="-2.22 2.22" forcerange="-30.0 30.0" />
-    <position name="Left_Joint3_position" joint="Left_Joint3" kp="2000" kv="100" ctrlrange="-2.84 2.84" forcerange="-30.0 30.0" />
-    <position name="Left_Joint4_position" joint="Left_Joint4" kp="2000" kv="100" ctrlrange="-2.23 2.23" forcerange="-30.0 30.0" />
-    <position name="Left_Joint5_position" joint="Left_Joint5" kp="2000" kv="100" ctrlrange="-2.71 2.71" forcerange="-30.0 30.0" />
-    <position name="Left_Joint6_position" joint="Left_Joint6" kp="2000" kv="100" ctrlrange="-2.11 2.11" forcerange="-30.0 30.0" />
-    <position name="Left_Joint7_position" joint="Left_Joint7" kp="2000" kv="100" ctrlrange="-2.84 3.14" forcerange="-30.0 30.0" />
-    <position name="Right_Joint1_position" joint="Right_Joint1" kp="2000" kv="100" ctrlrange="-2.84 2.84" forcerange="-30.0 30.0" />
-    <position name="Right_Joint2_position" joint="Right_Joint2" kp="2000" kv="100" ctrlrange="-2.22 2.22" forcerange="-30.0 30.0" />
-    <position name="Right_Joint3_position" joint="Right_Joint3" kp="2000" kv="100" ctrlrange="-2.84 2.84" forcerange="-30.0 30.0" />
-    <position name="Right_Joint4_position" joint="Right_Joint4" kp="2000" kv="100" ctrlrange="-2.23 2.23" forcerange="-30.0 30.0" />
-    <position name="Right_Joint5_position" joint="Right_Joint5" kp="2000" kv="100" ctrlrange="-2.71 2.71" forcerange="-30.0 30.0" />
-    <position name="Right_Joint6_position" joint="Right_Joint6" kp="2000" kv="100" ctrlrange="-2.11 2.11" forcerange="-30.0 30.0" />
-    <position name="Right_Joint7_position" joint="Right_Joint7" kp="2000" kv="100" ctrlrange="-2.84 3.14" forcerange="-30.0 30.0" />
+    <position name="Left_Joint1_position" joint="Left_Joint1" kp="20000" kv="500" ctrlrange="-2.84 2.84" />
+    <position name="Left_Joint2_position" joint="Left_Joint2" kp="20000" kv="500" ctrlrange="-2.22 2.22" />
+    <position name="Left_Joint3_position" joint="Left_Joint3" kp="20000" kv="500" ctrlrange="-2.84 2.84" />
+    <position name="Left_Joint4_position" joint="Left_Joint4" kp="20000" kv="500" ctrlrange="-2.23 2.23" />
+    <position name="Left_Joint5_position" joint="Left_Joint5" kp="20000" kv="500" ctrlrange="-2.71 2.71" />
+    <position name="Left_Joint6_position" joint="Left_Joint6" kp="20000" kv="500" ctrlrange="-2.11 2.11" />
+    <position name="Left_Joint7_position" joint="Left_Joint7" kp="20000" kv="500" ctrlrange="-2.84 3.14" />
+    <position name="Right_Joint1_position" joint="Right_Joint1" kp="20000" kv="500" ctrlrange="-2.84 2.84" />
+    <position name="Right_Joint2_position" joint="Right_Joint2" kp="20000" kv="500" ctrlrange="-2.22 2.22" />
+    <position name="Right_Joint3_position" joint="Right_Joint3" kp="20000" kv="500" ctrlrange="-2.84 2.84" />
+    <position name="Right_Joint4_position" joint="Right_Joint4" kp="20000" kv="500" ctrlrange="-2.23 2.23" />
+    <position name="Right_Joint5_position" joint="Right_Joint5" kp="20000" kv="500" ctrlrange="-2.71 2.71" />
+    <position name="Right_Joint6_position" joint="Right_Joint6" kp="20000" kv="500" ctrlrange="-2.11 2.11" />
+    <position name="Right_Joint7_position" joint="Right_Joint7" kp="20000" kv="500" ctrlrange="-2.84 3.14" />
   </actuator>
 </mujoco>

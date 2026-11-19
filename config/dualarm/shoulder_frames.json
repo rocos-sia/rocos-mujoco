@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "profile": "shoulder-v1",
+  "parent": "base_link",
+  "arms": {
+    "left": {
+      "base_link": "left_base",
+      "tip_link": "Left_Link7",
+      "translation": [
+        0.011578,
+        -0.063,
+        0.091501
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    },
+    "right": {
+      "base_link": "right_base",
+      "tip_link": "Right_Link7",
+      "translation": [
+        0.011578,
+        -0.267,
+        0.091501
+      ],
+      "rpy": [
+        0,
+        0,
+        0
+      ]
+    }
+  }
+}

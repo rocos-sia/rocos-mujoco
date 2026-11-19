@@ -262,6 +262,9 @@ void TestTransforms(Fixture& fixture, int id) {
         Check(std::abs(data->ctrl[0] - 0.125) < 1e-12, "CSP decodes position scale");
         client.setSlaveOutputVarValueByName<int8_t>(0, "Modes of operation", 9);
         client.setSlaveOutputVarValueByName<int32_t>(0, "Target velocity", -2000);
+        // The disabled brake above clears velocity; inject the CSV sample only
+        // after activation so this remains a unit-conversion test.
+        data->qvel[0] = -0.375;
         SimulatorTestAccess::control(sim);
         Check(std::abs(data->qfrc_applied[0] - 62.5) < 1e-12,
               "CSV decodes velocity scale without offset");

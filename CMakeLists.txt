@@ -166,8 +166,20 @@ if(BUILD_TESTING)
     add_test(NAME dualarm_shm COMMAND dualarm_shm_test)
     set_tests_properties(dualarm_shm PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
 
+    add_executable(dualarm_shoulder_test tests/dualarm_shoulder_test.cpp)
+    target_link_libraries(dualarm_shoulder_test PRIVATE rocos_mujoco)
+    target_compile_definitions(dualarm_shoulder_test PRIVATE
+        ROCOS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    add_test(NAME dualarm_shoulder_geometry COMMAND dualarm_shoulder_test)
+    add_test(NAME dualarm_shoulder_shm COMMAND dualarm_shm_test --shoulder)
+    set_tests_properties(dualarm_shoulder_shm PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+
     find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME dualarm_pose_conversion COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/dualarm_pose_conversion_test.py)
+        add_test(NAME dualarm_shoulder_generated COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_dualarm_shoulders.py --check)
         add_test(NAME startup_config COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/startup_config_test.py
             $<TARGET_FILE:rocos_mujoco_sim> ${CMAKE_CURRENT_SOURCE_DIR})
